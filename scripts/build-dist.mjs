@@ -11,8 +11,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
 
 // 메인 HTML 이 로드하는 자산 목록
+const HTML_SRC = "바이브 다이어리 - 사이드 도크 v2.html";
 const assets = [
-  "바이브 다이어리 - 사이드 도크 v2.html",
   "styles.css",
   "tweaks-panel.jsx",
   "v2",
@@ -31,8 +31,9 @@ function copyRecursive(src, dest) {
 }
 
 mkdirSync(dist, { recursive: true });
+copyFileSync(join(root, HTML_SRC), join(dist, "index.html"));
 for (const name of assets) {
   copyRecursive(join(root, name), join(dist, name));
 }
 
-console.log(`dist/ 준비 완료 (${assets.length}개 자산)`);
+console.log(`dist/ 준비 완료 (${assets.length + 1}개 자산)`);

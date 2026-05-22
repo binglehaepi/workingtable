@@ -59,7 +59,7 @@ function seed() {
     commands: [],
     retros: [],
     playlist: [],
-    dday: { date: "", label: "디데이" },
+    dday: { date: "", label: "" },
     mailUrl: "",
     notes: {},
     selectedDate: t,
@@ -92,7 +92,7 @@ function load() {
     data.aiBookmarks ??= [];
     data.retros      ??= [];
     data.playlist    ??= [];
-    data.dday        ??= { date: "", label: "디데이" };
+    data.dday        ??= { date: "", label: "" };
     data.mailUrl     ??= "";
     data.notes       ??= {};
     data.selectedDate = today();   // 시작 시 항상 오늘

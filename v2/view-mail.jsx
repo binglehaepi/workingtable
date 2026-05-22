@@ -84,7 +84,7 @@ function InquiryRow({ m, selected, onPick, actions }) {
       <button onClick={() => actions.toggleReplied(m.id)}
         className={"sk-check" + (m.replied ? " done" : "")}
         style={{ cursor: "pointer", flexShrink: 0 }}
-        title={m.replied ? "미답으로" : "답장함으로"} />
+        title={m.replied ? L("mail.titleUnreply") : L("mail.titleReply")} />
       <DelBtn onClick={() => actions.removeEmail(m.id)} />
     </div>
   );
