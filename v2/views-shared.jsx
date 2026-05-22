@@ -92,7 +92,7 @@ function InlineAdd({ placeholder, onAdd, multiline = false, dashed = true }) {
           background: "var(--pink)", border: "1.1px solid var(--ink)",
           padding: "1px 10px", borderRadius: 99,
           fontFamily: "var(--hand)", fontSize: 13, color: "var(--ink)",
-        }}>저장</button>
+        }}>{L("common.save")}</button>
       )}
     </div>
   );
@@ -146,7 +146,7 @@ function Editable({ value, onChange, placeholder = "", multiline = false, style 
 // 삭제 버튼 (작은 ×)
 function DelBtn({ onClick }) {
   return (
-    <button onClick={onClick} title="삭제" style={{
+    <button onClick={onClick} title={L("common.delete")} style={{
       all: "unset", cursor: "pointer",
       width: 16, height: 16, borderRadius: "50%",
       display: "grid", placeItems: "center",
@@ -181,10 +181,10 @@ function TodaySummary() {
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ fontFamily: "var(--hand)", fontSize: 16, fontWeight: 700, color: "var(--ink)" }}>
-        오늘 — {diary.fmtKDate(today)}
+        {L("today.title")} — {diary.fmtKDate(today)}
       </div>
       <div className="sk-cap" style={{ marginTop: 1, fontSize: 13 }}>
-        작업 {minutes}m · {todos.length}개 할 일 · {unreplied}개 미답 메일
+        {L("today.summary", { min: minutes, todos: todos.length, mails: unreplied })}
       </div>
     </div>
   );
@@ -206,8 +206,8 @@ function openLocalPath(path) {
     const op = window.__TAURI__ && window.__TAURI__.opener;
     if (op && op.openPath) { op.openPath(path).catch(() => op.revealItemInDir && op.revealItemInDir(path)); return; }
     if (op && op.revealItemInDir) { op.revealItemInDir(path); return; }
-  } catch (e) { alert("폴더 열기 실패: " + (e && e.message ? e.message : e)); return; }
-  alert("폴더 열기는 데스크탑 앱에서만 동작해요.");
+  } catch (e) { alert(L("repo.folderError", { msg: e && e.message ? e.message : e })); return; }
+  alert(L("repo.folderDesktopOnly"));
 }
 function pathBasename(p) {
   if (!p) return "";
@@ -327,7 +327,7 @@ function RepoButtons() {
   function openGit() {
     let url = project.repoUrl;
     if (!url) {
-      url = prompt("git 저장소 주소 (예: https://github.com/me/repo)") || "";
+      url = prompt(L("repo.gitPrompt")) || "";
       if (!url.trim()) return;
       actions.updateProject(project.id, { repoUrl: url.trim() });
       url = url.trim();
@@ -337,7 +337,7 @@ function RepoButtons() {
   function openFolder() {
     let p = project.path;
     if (!p) {
-      p = prompt("프로젝트 폴더 경로 (예: C:\\work\\my-repo)") || "";
+      p = prompt(L("repo.folderPrompt")) || "";
       if (!p.trim()) return;
       actions.updateProject(project.id, { path: p.trim() });
       p = p.trim();
@@ -358,11 +358,11 @@ function RepoButtons() {
 
   return (
     <div style={{ display: "flex", gap: 6, marginBottom: 7 }}>
-      <button onClick={openGit} title={project.repoUrl || "git 주소 연결"} style={keyBtn}>
-        ↗ {project.repoUrl ? "git 저장소" : "git 연결"}
+      <button onClick={openGit} title={project.repoUrl || L("repo.gitConnect")} style={keyBtn}>
+        ↗ {project.repoUrl ? L("repo.gitOpen") : L("repo.gitLink")}
       </button>
-      <button onClick={openFolder} title={project.path || "폴더 경로 연결"} style={keyBtn}>
-        📁 {project.path ? pathBasename(project.path) : "폴더 연결"}
+      <button onClick={openFolder} title={project.path || L("repo.folderConnect")} style={keyBtn}>
+        📁 {project.path ? pathBasename(project.path) : L("repo.folderLink")}
       </button>
     </div>
   );

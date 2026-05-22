@@ -46,7 +46,7 @@ function TodoRow({ t, actions, hot, i = 0 }) {
         onClick={() => actions.toggleTodo(t.id)}
         className={"sk-check" + (t.done ? " done" : "")}
         style={{ cursor: "pointer" }}
-        title={t.done ? "되돌리기" : "끝냄으로 표시"}
+        title={t.done ? L("todo.titleUndo") : L("todo.titleDone")}
       />
       <span style={{
         fontFamily: "var(--hand)", fontSize: 15, flex: 1,
@@ -55,7 +55,7 @@ function TodoRow({ t, actions, hot, i = 0 }) {
       }}>{t.text}</span>
       {!t.done && (
         <button onClick={() => actions.toggleHot(t.id)}
-          title={t.hot ? "급함 해제" : "급함으로 표시"}
+          title={t.hot ? L("todo.titleHotOff") : L("todo.titleHotOn")}
           style={{
             all: "unset", cursor: "pointer", fontSize: 14,
             color: t.hot ? "var(--ink)" : "var(--ink-3)",
