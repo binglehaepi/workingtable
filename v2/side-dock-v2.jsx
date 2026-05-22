@@ -12,6 +12,7 @@ const TABS = [
   { id: "todo",  labelKey: "tab.todo",     glyph: "✓", color: "#d4ecdb", view: () => <TodoView /> },
   { id: "cheat", labelKey: "tab.cheat",    glyph: "❯", color: "#ffe8c8", view: () => <CheatView /> },
   { id: "mail",  labelKey: "tab.mail",     glyph: "✉", color: "#ffe0d2", view: () => <MailView /> },
+  { id: "photo", labelKey: "tab.photo",    glyph: "📷", color: "#ffe6f0", view: () => <PhotocardView /> },
   { id: "cal",   labelKey: "tab.cal",      glyph: "📅", color: "#d4e6fa", view: () => <CalendarView /> },
   { id: "deco",  labelKey: "tab.deco",     glyph: "🎨", color: "#ffe6f0", view: () => null, foot: true },
   { id: "settings", labelKey: "tab.settings", glyph: "⚙", color: "#e6e6ee", view: () => null, foot: true },
@@ -30,6 +31,10 @@ function SideDockV2({ tweaks, setTweak }) {
     return () => window.removeEventListener("resize", on);
   }, []);
   const compactTabs = winH < 640;
+
+  // 포토카드 오버레이 활성 시: 도크 숨기고 전체창 투명 포카만 표시
+  const pc = usePhotocard();
+  if (pc.getState().active) return <PhotocardOverlay />;
 
   const tabSide  = tweaks?.tabSide  ?? "right";
   const dockSide = tweaks?.dockSide ?? "left";

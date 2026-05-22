@@ -7,7 +7,7 @@
 (function () {
   const DICT = {
     ko: {
-      "tab.todo": "할 일", "tab.cheat": "명령어", "tab.mail": "문의", "tab.cal": "달력", "tab.deco": "꾸미기", "tab.settings": "설정",
+      "tab.todo": "할 일", "tab.cheat": "명령어", "tab.mail": "문의", "tab.cal": "달력", "tab.photo": "포토카드", "tab.deco": "꾸미기", "tab.settings": "설정",
       "proj.menu": "프로젝트", "proj.new": "＋ 새 프로젝트 추가", "proj.rename": "✎ 이름 변경", "proj.delete": "✕ \"{name}\" 삭제",
       "proj.newPrompt": "새 프로젝트 이름", "proj.renamePrompt": "프로젝트 이름 변경", "proj.fallback": "프로젝트",
       "proj.deleteConfirm": "\"{name}\" 프로젝트를 삭제할까요? (할 일 등 데이터는 그대로 남음)",
@@ -45,7 +45,7 @@
       "th.basic": "기본", "th.melon": "메론소다", "th.summer": "여름", "th.green": "초록", "th.milk": "딸기우유", "th.peach": "복숭아", "th.lavender": "라벤더", "th.night": "밤하늘",
     },
     en: {
-      "tab.todo": "Tasks", "tab.cheat": "Commands", "tab.mail": "Inbox", "tab.cal": "Calendar", "tab.deco": "Theme", "tab.settings": "Settings",
+      "tab.todo": "Tasks", "tab.cheat": "Commands", "tab.mail": "Inbox", "tab.cal": "Calendar", "tab.photo": "Photocard", "tab.deco": "Theme", "tab.settings": "Settings",
       "proj.menu": "Project", "proj.new": "＋ New project", "proj.rename": "✎ Rename", "proj.delete": "✕ Delete \"{name}\"",
       "proj.newPrompt": "New project name", "proj.renamePrompt": "Rename project", "proj.fallback": "Project",
       "proj.deleteConfirm": "Delete project \"{name}\"? (tasks and other data remain)",
@@ -83,7 +83,7 @@
       "th.basic": "Basic", "th.melon": "Melon Soda", "th.summer": "Summer", "th.green": "Green", "th.milk": "Strawberry Milk", "th.peach": "Peach", "th.lavender": "Lavender", "th.night": "Night Sky",
     },
     zh: {
-      "tab.todo": "待办", "tab.cheat": "命令", "tab.mail": "收件", "tab.cal": "日历", "tab.deco": "装扮", "tab.settings": "设置",
+      "tab.todo": "待办", "tab.cheat": "命令", "tab.mail": "收件", "tab.cal": "日历", "tab.photo": "拍立得", "tab.deco": "装扮", "tab.settings": "设置",
       "proj.menu": "项目", "proj.new": "＋ 新建项目", "proj.rename": "✎ 重命名", "proj.delete": "✕ 删除 \"{name}\"",
       "proj.newPrompt": "新项目名称", "proj.renamePrompt": "重命名项目", "proj.fallback": "项目",
       "proj.deleteConfirm": "删除项目 \"{name}\"？（任务等数据将保留）",
@@ -121,7 +121,7 @@
       "th.basic": "基础", "th.melon": "蜜瓜苏打", "th.summer": "夏天", "th.green": "绿色", "th.milk": "草莓牛奶", "th.peach": "蜜桃", "th.lavender": "薰衣草", "th.night": "夜空",
     },
     ja: {
-      "tab.todo": "タスク", "tab.cheat": "コマンド", "tab.mail": "問い合わせ", "tab.cal": "カレンダー", "tab.deco": "着せ替え", "tab.settings": "設定",
+      "tab.todo": "タスク", "tab.cheat": "コマンド", "tab.mail": "問い合わせ", "tab.cal": "カレンダー", "tab.photo": "フォトカード", "tab.deco": "着せ替え", "tab.settings": "設定",
       "proj.menu": "プロジェクト", "proj.new": "＋ 新規プロジェクト", "proj.rename": "✎ 名前変更", "proj.delete": "✕ \"{name}\" を削除",
       "proj.newPrompt": "新しいプロジェクト名", "proj.renamePrompt": "プロジェクト名を変更", "proj.fallback": "プロジェクト",
       "proj.deleteConfirm": "プロジェクト \"{name}\" を削除しますか？（タスク等のデータは残ります）",
