@@ -32,10 +32,6 @@ function SideDockV2({ tweaks, setTweak }) {
   }, []);
   const compactTabs = winH < 640;
 
-  // 포토카드 오버레이 활성 시: 도크 숨기고 전체창 투명 포카만 표시
-  const pc = usePhotocard();
-  if (pc.getState().active) return <PhotocardOverlay />;
-
   const tabSide  = tweaks?.tabSide  ?? "right";
   const dockSide = tweaks?.dockSide ?? "left";
   const tabStyle = tweaks?.tabStyle ?? "paper";
@@ -105,7 +101,7 @@ function SideDockV2({ tweaks, setTweak }) {
         {/* sticky — 헤더 (제목/음악/타이머/디데이 각 한 줄) */}
         <div style={{
           padding: "9px 12px 10px",
-          background: (isPhoto && desktopMode) ? "transparent" : headerBg,
+          background: headerBg,
           borderBottom: "1.1px solid var(--ink)",
           flexShrink: 0,
         }}>
