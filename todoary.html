@@ -79,6 +79,7 @@
   <script type="text/babel" src="v2/timer.jsx"></script>
   <script type="text/babel" src="v2/tracker.jsx"></script>
   <script type="text/babel" src="v2/photocard.jsx"></script>
+  <script type="text/babel" src="v2/diary-pack.jsx"></script>
   <script type="text/babel" src="v2/side-dock-v2.jsx"></script>
 
   <!-- Dev cache-buster: when served from localhost, append ?_=<ts> to every
@@ -128,6 +129,8 @@
     function App() {
       useI18n(); // 언어 변경 시 전체 리렌더
       const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+      const PAGE_W = 380;                                       // 오른쪽 페이지(다이어리팩) 폭
+      const [diaryOpen, setDiaryOpen] = React.useState(false);  // 세션 한정 — 매 실행 닫힌(440px) 채 시작
       React.useEffect(() => {
         document.documentElement.setAttribute("data-desktop-mode", String(t.desktopMode));
       }, [t.desktopMode]);
@@ -155,7 +158,8 @@
           // 최초 1회: 저장된 마지막 높이가 있으면 그걸로 복원
           const h = (!sizedRef.current && t.appHeight > 0) ? Math.min(t.appHeight, avail - 10) : preset;
           sizedRef.current = true;
-          T.window.getCurrentWindow().setSize(new T.window.LogicalSize(440, h));
+          // 오른쪽 페이지가 펼쳐져 있으면 그 폭만큼 넓게 (diaryOpen 은 effect#3 가 위치까지 보정)
+          T.window.getCurrentWindow().setSize(new T.window.LogicalSize(440 + (diaryOpen ? PAGE_W : 0), h));
         } catch (_) {}
       }, [t.appSize, t.dockHidden]);
 
@@ -184,7 +188,7 @@
                            : t.appSize === "medium" ? Math.round(base * 0.7)
                            : base;
               const h = t.appHeight > 0 ? Math.min(t.appHeight, avail - 10) : preset;
-              const w = 440;
+              const w = 440 + (diaryOpen ? PAGE_W : 0);   // 보통 미니 복귀 시 diaryOpen=false → 440
               // 위치 클램프 — 사용자가 미니 상태에서 모서리로 끌어둔 경우 대비
               try {
                 const scale = (win.scaleFactor ? await win.scaleFactor() : 1) || 1;
@@ -202,6 +206,46 @@
           } catch (e) { console.warn("dockHidden window resize failed:", e); }
         })();
       }, [t.dockHidden]);
+
+      // 미니화 진입 시 오른쪽 페이지는 닫는다 (미니 위젯과 펼친 페이지는 공존하지 않음)
+      React.useEffect(() => {
+        if (t.dockHidden && diaryOpen) setDiaryOpen(false);
+      }, [t.dockHidden]);
+
+      // 오른쪽 페이지 펼침/접힘 — 창 폭 440↔820 + 도크가 화면 모서리에 고정되도록 위치 보정.
+      // (미니모드 effect 의 좌표 보정 패턴을 그대로 따름. 마운트 첫 실행은 건너뜀: diaryOpen 은 항상 false 로 시작)
+      const diaryFirstRef = React.useRef(true);
+      React.useEffect(() => {
+        if (diaryFirstRef.current) { diaryFirstRef.current = false; return; }
+        if (t.dockHidden) return;
+        const T = window.__TAURI__;
+        if (!T || !T.window || !T.window.getCurrentWindow) return;
+        const win = T.window.getCurrentWindow();
+        const LS = T.window.LogicalSize;
+        const LP = T.window.LogicalPosition;
+        (async () => {
+          try {
+            const w = 440 + (diaryOpen ? PAGE_W : 0);
+            const h = window.innerHeight > 200 ? window.innerHeight : 600;
+            const availW = window.screen.availWidth || 1280;
+            const scale = (win.scaleFactor ? await win.scaleFactor() : 1) || 1;
+            const phys = await win.outerPosition();
+            const px = phys.x / scale;
+            const py = phys.y / scale;
+            const dockSide = t.dockSide || "right";
+            // 도크가 오른쪽이면 우측 모서리를 고정 (펼치면 왼쪽으로, 접으면 오른쪽으로 이동)
+            let nx = dockSide === "right" ? (diaryOpen ? px - PAGE_W : px + PAGE_W) : px;
+            nx = Math.max(0, Math.min(availW - w, nx));
+            if (diaryOpen) {
+              await win.setPosition(new LP(nx, py));   // 위치 먼저(왼쪽 이동) → 크기(오른쪽 성장)
+              await win.setSize(new LS(w, h));
+            } else {
+              await win.setSize(new LS(w, h));          // 크기 먼저(축소) → 위치(오른쪽 복귀)
+              await win.setPosition(new LP(nx, py));
+            }
+          } catch (e) { console.warn("diary page resize failed:", e); }
+        })();
+      }, [diaryOpen]);
 
       // 반복 할 일 인스턴스 자동 생성 (앱 시작 + 매 분 확인해 자정 넘어가면 새로 생성)
       React.useEffect(() => {
@@ -231,7 +275,7 @@
       }, []);
       return (
         <>
-          <SideDockV2 tweaks={t} setTweak={setTweak} />
+          <SideDockV2 tweaks={t} setTweak={setTweak} diaryOpen={diaryOpen} onToggleDiary={() => setDiaryOpen(o => !o)} />
           <ActivityTracker />
           <RoomSyncBridge />
           <RetroModal />

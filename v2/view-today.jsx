@@ -172,11 +172,11 @@ function WeekPane({ onPickDay }) {
   const doneByDay = {};
   dayStrings.forEach(d => { dueByDay[d] = []; doneByDay[d] = []; });
   todos.forEach(t => {
-    if (t.dueDate && dueByDay[t.dueDate]) dueByDay[t.dueDate].push(t);
-    if (!t.dueDate && t.done && t.completedAt) {
-      const k = t.completedAt.slice(0, 10);
-      if (doneByDay[k]) doneByDay[k].push(t);
-    }
+    dayStrings.forEach(d => {
+      if (!diary.matchesTodoDay(t, d, todayStr)) return;
+      if (t.done) doneByDay[d].push(t);
+      else dueByDay[d].push(t);
+    });
   });
   const workByDay = {};
   (state.workSessions ?? []).forEach(w => { if (dayStrings.includes(w.date)) workByDay[w.date] = w.minutes; });

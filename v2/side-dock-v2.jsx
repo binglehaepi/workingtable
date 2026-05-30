@@ -18,7 +18,7 @@ const TABS = [
   { id: "settings", labelKey: "tab.settings", glyph: "⚙", color: "#e6e6ee", view: () => null, foot: true },
 ];
 
-function SideDockV2({ tweaks, setTweak }) {
+function SideDockV2({ tweaks, setTweak, diaryOpen, onToggleDiary }) {
   const [active, setActive] = useState("todo");
   // 작업방 탭 표시 여부 (기본 켜짐). 꺼지면 현재 활성 탭이 room 이었으면 todo 로 자동 전환.
   const showRoomTab = tweaks?.showRoomTab ?? true;
@@ -74,6 +74,7 @@ function SideDockV2({ tweaks, setTweak }) {
   const effectiveTabSide = dockSide === "left" ? tabSide : (tabSide === "right" ? "left" : "right");
 
   const DOCK_W = 380;
+  const PAGE_W = 380;   // 오른쪽 페이지(다이어리팩) 폭 — todoary.html 의 PAGE_W 와 동일
 
   return (
     <div style={{
@@ -111,6 +112,7 @@ function SideDockV2({ tweaks, setTweak }) {
         }}>
           <ProjectSwitcher />
           <div data-tauri-drag-region style={{ flex: 1, alignSelf: "stretch" }} />
+          <DiaryPageToggle open={diaryOpen} onToggle={onToggleDiary} />
           <CloseAppButton />
         </div>
 
@@ -135,7 +137,22 @@ function SideDockV2({ tweaks, setTweak }) {
 
       </div>
 
-      {/* 다이어리 인덱스 탭들 — 도크 본체 옆에 삐죽 */}
+      {/* 다이어리팩 — 오른쪽 페이지 (책처럼 도크 본체 바로 옆에 펼쳐짐) */}
+      {diaryOpen && (
+        <div style={{
+          position: "absolute", top: 0, bottom: 0,
+          [dockSide]: DOCK_W,
+          width: PAGE_W,
+          zIndex: 2,
+          boxShadow: dockSide === "left"
+            ? "3px 0 10px -5px rgba(40,51,63,0.3)"
+            : "-3px 0 10px -5px rgba(40,51,63,0.3)",
+        }}>
+          <DiaryPackPage onClose={onToggleDiary} />
+        </div>
+      )}
+
+      {/* 다이어리 인덱스 탭들 — 도크 본체 옆에 삐죽 (페이지 펼쳐지면 그 바깥으로 이동) */}
       <DiaryTabs
         tabs={visibleTabs}
         active={active}
@@ -143,6 +160,7 @@ function SideDockV2({ tweaks, setTweak }) {
         dockSide={dockSide}
         tabSide={effectiveTabSide}
         dockWidth={DOCK_W}
+        pageOffset={diaryOpen ? PAGE_W : 0}
         tabStyle={tabStyle}
         chrome={chrome}
         compact={compactTabs}
@@ -237,19 +255,19 @@ function TabHeader({ active }) {
 }
 
 // ---- 다이어리 인덱스 탭 ----
-function DiaryTabs({ tabs, active, onSelect, dockSide, tabSide, dockWidth, tabStyle, chrome, compact, autoHide }) {
+function DiaryTabs({ tabs, active, onSelect, dockSide, tabSide, dockWidth, pageOffset = 0, tabStyle, chrome, compact, autoHide }) {
   const cm = (pct) => `color-mix(in srgb, ${chrome || "#a9cdf5"} ${pct}%, white)`;
   // 탭이 도크의 어느 쪽 바깥에 붙는지 → 위치 계산
   const onLeft = tabSide === "left";
 
-  // 탭 컨테이너 위치
+  // 탭 컨테이너 위치 (오른쪽 페이지가 펼쳐지면 그 폭만큼 더 바깥으로)
   const containerPos = {};
   if (dockSide === "left") {
-    // 도크가 왼쪽에 있음 → 탭은 도크의 오른쪽 모서리에 붙음
-    containerPos.left = dockWidth;
+    // 도크가 왼쪽에 있음 → 탭은 도크(+페이지)의 오른쪽 모서리에 붙음
+    containerPos.left = dockWidth + pageOffset;
   } else {
-    // 도크가 오른쪽에 있음 → 탭은 도크의 왼쪽 모서리에 붙음
-    containerPos.right = dockWidth;
+    // 도크가 오른쪽에 있음 → 탭은 도크(+페이지)의 왼쪽 모서리에 붙음
+    containerPos.right = dockWidth + pageOffset;
   }
   const stickRight = dockSide === "left"; // 탭이 오른쪽으로 삐쳐나옴
 
@@ -375,6 +393,30 @@ function DiaryTabs({ tabs, active, onSelect, dockSide, tabSide, dockWidth, tabSt
         {tabs.map(renderTab)}
       </div>
     </div>
+  );
+}
+
+// ---- 헤더 — 오른쪽 페이지(다이어리팩) 펼치기/접기 토글 ----
+function DiaryPageToggle({ open, onToggle }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={() => onToggle && onToggle()}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={L(open ? "dpack.close" : "dpack.open")}
+      aria-label={L(open ? "dpack.close" : "dpack.open")}
+      style={{
+        all: "unset", cursor: "pointer", flexShrink: 0,
+        width: 20, height: 20, borderRadius: 4,
+        display: "grid", placeItems: "center",
+        fontSize: 12, lineHeight: 1,
+        color: "var(--ink)",
+        background: open ? "color-mix(in srgb, var(--point,#fdff85) 65%, white)" : (hover ? "rgba(255,255,255,0.45)" : "transparent"),
+        border: open ? "1px solid var(--ink)" : "1px solid transparent",
+        transition: "background 0.15s, border 0.15s",
+      }}
+    >📖</button>
   );
 }
 
