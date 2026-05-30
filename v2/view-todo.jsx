@@ -54,28 +54,13 @@ function TodoView() {
   );
 
   // 모드별 미완료 카운트 — 토글 뱃지에 표시
-  const dateModeIncomplete = items.filter(t => {
-    if (t.done) return false;
-    if (isToday) {
-      if (!t.dueDate) return true;
-      if (t.dueDate === todayStr) return true;
-      if (t.dueDate < todayStr) return true;
-      return false;
-    }
-    return t.dueDate === selectedDate;
-  }).length;
+  const dateModeIncomplete = items.filter(t => !t.done && diary.matchesTodoDay(t, selectedDate, todayStr)).length;
   const allModeIncomplete = items.filter(t => !t.done && inMonthRange(t)).length;
 
   // 필터 — 모드에 따라
   const list = items.filter(t => {
     if (filterMode === "all") return inMonthRange(t);
-    if (isToday) {
-      if (!t.dueDate) return true;
-      if (t.dueDate === todayStr) return true;
-      if (t.dueDate < todayStr && !t.done) return true;
-      return false;
-    }
-    return t.dueDate === selectedDate;
+    return diary.matchesTodoDay(t, selectedDate, todayStr);
   }).slice().sort((a, b) => {
     if (a.done !== b.done) return a.done ? 1 : -1;
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
@@ -94,7 +79,7 @@ function TodoView() {
     items.filter(t => !t.done && t.dueDate).map(t => t.dueDate)
   );
   const doneDates = new Set(
-    items.filter(t => t.done && t.completedAt).map(t => t.completedAt.slice(0, 10))
+    items.filter(t => t.done).map(t => diary.completionDay(t)).filter(Boolean)
   );
 
   const onPick = (id) => setSel(s => (s === id ? null : id));

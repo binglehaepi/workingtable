@@ -283,6 +283,22 @@ function setState(updater) {
 function getState() { return _state; }
 function subscribe(fn) { _subs.add(fn); return () => _subs.delete(fn); }
 
+// ---- 할 일 ↔ 날짜 매칭 (완료는 completedAt 기준, 미완료는 마감/인박스/연체) ----
+function completionDay(t) {
+  if (t.completedAt) return t.completedAt.slice(0, 10);
+  if (!t.done) return null;
+  if (t.dueDate) return t.dueDate;
+  return (t.createdAt || "").slice(0, 10) || null;
+}
+function matchesTodoDay(t, day, today) {
+  const comp = completionDay(t);
+  if (t.done) return comp === day;
+  if (t.dueDate === day) return true;
+  if (day === today && !t.dueDate) return true;
+  if (day === today && t.dueDate && t.dueDate < today) return true;
+  return false;
+}
+
 // ---- 액션들 ----
 const actions = {
   // ----- 프로젝트 -----
@@ -846,9 +862,8 @@ const select = {
   dayBundle: (s, date) => {
     const pid = s.currentProjectId;
     const todos = (s.todos ?? []).filter(t => t.projectId === pid);
-    const due = todos.filter(t => t.dueDate === date);
-    const doneFloat = todos.filter(t => !t.dueDate && t.done && (t.completedAt || "").slice(0, 10) === date);
-    const items = [...due, ...doneFloat];
+    const t = today();
+    const items = todos.filter(todo => matchesTodoDay(todo, date, t));
     const totalSec = items.reduce((sum, t) => sum + (t.trackedSeconds || 0), 0);
     const sess = (s.workSessions ?? []).find(w => w.date === date);
     // 그 날 가장 많이 들은 곡
@@ -874,4 +889,4 @@ const select = {
 };
 
 // 글로벌 노출
-window.diary = { useDiary, actions, select, today, fmtKDate, fmtKDateShort, getState, memoTitleFromHtml, MEMO_ICONS };
+window.diary = { useDiary, actions, select, today, fmtKDate, fmtKDateShort, getState, memoTitleFromHtml, MEMO_ICONS, matchesTodoDay, completionDay };
