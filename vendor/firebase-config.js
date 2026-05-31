@@ -38,12 +38,14 @@ service cloud.firestore {
     match /rooms/{roomId} {
       allow read: if signedIn();
       allow create: if signedIn();
-      // 멤버는 자유롭게 update / 비멤버는 memberCount +1 (≤4) 만 허용 — 입장용
+      // 멤버는 자유롭게 update / 비멤버는 memberCount +1 (≤4) 또는 -1(퇴장) 만 허용
       allow update: if isMember(roomId)
         || (signedIn()
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
-            && request.resource.data.memberCount == resource.data.memberCount + 1
-            && resource.data.memberCount < 4);
+            && (
+              (request.resource.data.memberCount == resource.data.memberCount + 1 && resource.data.memberCount < 4)
+              || (request.resource.data.memberCount == resource.data.memberCount - 1 && resource.data.memberCount > 0)
+            ));
       allow delete: if isMember(roomId);
 
       match /members/{uid} {

@@ -142,6 +142,18 @@
       setS({ bridgeStatus: fb.getStatus() });
       await fb.init();
       setS({ initialized: true });
+      // 저장된 방 ID가 있는데 멤버 문서가 없으면(UID 변경 등) 로컬만 정리
+      const savedId = state.currentRoomId;
+      if (savedId && fb.isReady()) {
+        try {
+          const ok = await fb.members.exists(savedId, fb.uid());
+          if (!ok) {
+            saveCurrentRoomId(null);
+            setS({ currentRoomId: null, roomMeta: null, members: [] });
+            detachAll();
+          }
+        } catch (_) {}
+      }
     })();
     return bootstrapPromise;
   }
@@ -186,10 +198,17 @@
   async function leaveRoom() {
     const fb = window.firebaseBridge;
     const id = state.currentRoomId;
-    if (!fb || !id) return;
-    try { await fb.rooms.leave(id, fb.uid()); } catch (_) {}
+    if (!id) return;
+    // UI는 서버 응답을 기다리지 않고 즉시 빠져나옴 (나가기 버튼 무반응 방지)
+    detachAll();
     saveCurrentRoomId(null);
     setS({ currentRoomId: null, roomMeta: null, members: [], recentClaps: [] });
+    if (!fb || !fb.uid()) return;
+    try {
+      await fb.rooms.leave(id, fb.uid());
+    } catch (e) {
+      try { console.warn("[room] leave remote failed (local cleared)", e); } catch (_) {}
+    }
   }
 
   function setProfile(patch) {

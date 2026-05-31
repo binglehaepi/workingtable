@@ -189,7 +189,6 @@
     const roomRef = db.collection("rooms").doc(roomId);
     const memberRef = roomRef.collection("members").doc(uid);
 
-    // 현재 카운트 먼저 확인 (claps 정리 여부 결정용)
     const memberDoc = await memberRef.get();
     if (!memberDoc.exists) return;
     const roomDoc = await roomRef.get();
@@ -213,19 +212,23 @@
       } catch (e) { log("claps cleanup 실패 (계속 진행)", e); }
     }
 
-    // 트랜잭션: 멤버 삭제 + (마지막이면 방 삭제, 아니면 카운트 -1)
+    // 트랜잭션: 방/카운트 먼저 (아직 멤버 권한 있을 때) → 멤버 삭제
+    // 멤버를 먼저 지우면 isMember 규칙 때문에 room update/delete 가 거부됨
     await db.runTransaction(async (tx) => {
       const md = await tx.get(memberRef);
       const rd = await tx.get(roomRef);
       if (!md.exists) return;
-      const c = rd.exists ? (rd.data().memberCount || 0) : 0;
-      tx.delete(memberRef);
-      if (!rd.exists) return;
+      if (!rd.exists) {
+        tx.delete(memberRef);
+        return;
+      }
+      const c = rd.data().memberCount || 0;
       if (c <= 1) {
         tx.delete(roomRef);
       } else {
         tx.update(roomRef, { memberCount: c - 1 });
       }
+      tx.delete(memberRef);
     });
   }
 
@@ -249,6 +252,12 @@
       out.recentTodos = del;
     }
     await memberRef.set(out, { merge: true });
+  }
+
+  async function memberExists_remote(roomId, uid) {
+    if (!roomId || !uid) return false;
+    const doc = await db.collection("rooms").doc(roomId).collection("members").doc(uid).get();
+    return doc.exists;
   }
 
   // ---- 멤버 실시간 구독 ----
@@ -407,6 +416,11 @@
     saveLocal();
     fireLocalMembers(roomId);
   }
+  async function memberExists_local(roomId, uid) {
+    loadLocal();
+    const room = localState.rooms[roomId];
+    return !!(room && room.members && room.members[uid]);
+  }
   function watchMembers_local(roomId, cb) {
     const handler = (rid, members) => { if (rid === roomId) cb(members); };
     localSubs.members.add(handler);
@@ -472,6 +486,7 @@
     members: {
       updateMine: pick(updateMyMember_remote, updateMyMember_local),
       watch: pick(watchMembers_remote, watchMembers_local),
+      exists: pick(memberExists_remote, memberExists_local),
     },
     claps: {
       send: pick(sendClap_remote, sendClap_local),

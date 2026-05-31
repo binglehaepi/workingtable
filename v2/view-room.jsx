@@ -363,8 +363,12 @@ function RoomMainView() {
       window.dispatchEvent(new CustomEvent("room-flash", { detail: { msg: `초대 코드: ${code}` } }));
     }
   };
-  const onLeave = () => {
-    if (confirm(L("room.leaveConfirm"))) room.leaveRoom();
+  const onLeave = async (e) => {
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    const msg = L("room.leaveConfirm");
+    const ok = window.confirm(msg);
+    if (ok) await room.leaveRoom();
   };
 
   return (
