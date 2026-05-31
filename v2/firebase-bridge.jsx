@@ -300,6 +300,7 @@
   function watchMembers_remote(roomId, cb) {
     if (!roomId) return () => {};
     return db.collection("rooms").doc(roomId).collection("members")
+      .limit(8) // 방 cap 이 4명이라 현재 동작 무영향 — cap 이 풀렸을 때의 무제한 read 잠복위험만 차단
       .onSnapshot((snap) => {
         const arr = [];
         snap.forEach((d) => {

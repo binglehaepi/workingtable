@@ -1608,13 +1608,13 @@ function useRoomSync() {
   // (showTodoTitle 변화 감지는 위 메인 effect 의 deps 에 me?.showTodoTitle 가 들어 있어
   // currentTodoTitle/recentTodos 가 같은 patch 로 묶여 함께 나감 — 별도 effect 필요 없음)
 
-  // Heartbeat — 2분 마다. paused/away 는 비용 0 모드라 멈춤.
+  // Heartbeat — 8분 마다. paused/away 는 비용 0 모드라 멈춤.
   useEffectRoom(() => {
     if (!roomId || !myUid) return;
     if (myStatus === "paused" || myStatus === "away") return;
     const id = setInterval(() => {
       room.patchMyMember({}); // 빈 patch 라도 updateMyMember 가 lastActiveAt 만 갱신함
-    }, 2 * 60 * 1000);
+    }, 8 * 60 * 1000);
     return () => clearInterval(id);
   }, [roomId, myUid, myStatus]);
 
