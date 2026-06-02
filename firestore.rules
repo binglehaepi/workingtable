@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isMember(roomId) {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/rooms/$(roomId)/members/$(request.auth.uid));
+    }
+
+    match /inviteCodes/{code} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow delete: if signedIn();
+      allow update: if false;
+    }
+
+    match /rooms/{roomId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update: if isMember(roomId)
+        || (signedIn()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount'])
+            && (
+              (request.resource.data.memberCount == resource.data.memberCount + 1 && resource.data.memberCount < 4)
+              || (request.resource.data.memberCount == resource.data.memberCount - 1 && resource.data.memberCount > 0)
+            ));
+      allow delete: if isMember(roomId);
+
+      match /members/{uid} {
+        allow read: if isMember(roomId) || request.auth.uid == uid;
+        allow create, update, delete: if signedIn() && request.auth.uid == uid;
+      }
+
+      match /claps/{clapId} {
+        allow read: if isMember(roomId);
+        allow create: if isMember(roomId) && request.resource.data.fromUid == request.auth.uid;
+        allow delete: if isMember(roomId);
+        allow update: if false;
+      }
+    }
+  }
+}

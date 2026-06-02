@@ -66,6 +66,11 @@ Windows · macOS 지원, 자동 업데이트.
 - 상태는 `localStorage` 한 곳에 저장 (`window.diary` 전역 스토어)
 - 플러그인: `updater`(자동 업데이트), `opener`(링크/폴더 열기), `notification`
 
+## 📚 개발 문서
+
+- **[FIRESTORE_GUIDE.md](FIRESTORE_GUIDE.md)** — 함께 작업방 Firestore 구조·비용 설계·presence 상수
+- **[I18N_GUIDE.md](I18N_GUIDE.md)** — 다국어 추가/수정
+
 ## 📂 구조
 
 ```

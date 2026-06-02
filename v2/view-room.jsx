@@ -4,7 +4,8 @@
 //
 // 철학:
 //  • "조용히 옆에 누가 같이 일하고 있는 느낌" (body doubling) — 통화/채팅/푸시 없음
-//  • 흐르는 시간은 클라이언트가 workStartedAt 기준으로 매초 계산 (서버 비용 0)
+//  • 흐르는 시간·방 총 작업시간은 클라이언트 시계(workStartedAt / workSecondsTotal 합산, 서버 비용 0)
+//  • 레벨(roomLevel)은 오늘 할 일 전부 완료한 날마다 +1, 멤버 문서에 저장
 //  • 오프라인은 회색 카드로 남김 (감시 X, 따뜻한 느낌 O)
 //
 // 구조:
@@ -41,20 +42,323 @@ function fmtRoomClock(ts) {
   return `${ampm} ${h12}:${m}`;
 }
 
-// 오프라인 판정 — 마지막 활동 5분 초과
+const ROOM_LOG_KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const ROOM_LOG_CLAP_GAP_MS = 90 * 1000;
+
+function kstYmd(ts) {
+  const d = new Date((ts || Date.now()) + ROOM_LOG_KST_OFFSET_MS);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+function kstDayStartMs(ts) {
+  const ymd = kstYmd(ts);
+  return Date.parse(`${ymd}T00:00:00+09:00`);
+}
+
+function logIsToday(at, now) {
+  return (at || 0) >= kstDayStartMs(now);
+}
+
+function tsLikeToMs(t) {
+  if (t == null) return null;
+  if (typeof t === "number") return t;
+  if (typeof t.toMillis === "function") return t.toMillis();
+  if (typeof t.seconds === "number") return t.seconds * 1000;
+  if (typeof t._seconds === "number") return t._seconds * 1000;
+  if (typeof t === "string") {
+    const n = Date.parse(t);
+    return Number.isNaN(n) ? null : n;
+  }
+  return null;
+}
+
+/** 방 생성 시각 — room.createdAt 우선, 없으면 가장 이른 멤버 joinedAt */
+function roomCreatedAtMs(meta, members) {
+  const fromMeta = tsLikeToMs(meta && meta.createdAt);
+  if (fromMeta != null) return fromMeta;
+  if (!Array.isArray(members) || !members.length) return null;
+  const joins = members.map((m) => tsLikeToMs(m.joinedAt)).filter((x) => x != null);
+  return joins.length ? Math.min(...joins) : null;
+}
+
+/** KST 달력일 기준 경과일 — 생성 당일 D+0, 다음날부터 D+1… */
+function kstCalendarDaysSince(startMs, endMs) {
+  const a = Date.parse(`${kstYmd(startMs)}T00:00:00+09:00`);
+  const b = Date.parse(`${kstYmd(endMs)}T00:00:00+09:00`);
+  return Math.max(0, Math.round((b - a) / 86400000));
+}
+
+function roomDaysSinceCreated(meta, now, members) {
+  const ms = roomCreatedAtMs(meta, members);
+  if (ms == null) return 0;
+  return kstCalendarDaysSince(ms, now);
+}
+
+/** 오늘 할 일 전부 완료 */
+function memberTodayAllDone(done, total) {
+  const t = total || 0;
+  const d = done || 0;
+  return t > 0 && d >= t;
+}
+
+/** 저장된 roomLevel — 오늘을 정복했을 때만 표시 (완료한 날마다 +1) */
+function memberDisplayLevel(member, done, total) {
+  if (!memberTodayAllDone(done, total)) return null;
+  const lv = member?.roomLevel || 0;
+  return lv > 0 ? lv : null;
+}
+
+/** 방 누적 작업시간(초) — 멤버 문서 workSecondsTotal + 진행 중 세션(클라이언트 시계) */
+function memberRoomWorkSeconds(m, now) {
+  const committed = m.workSecondsTotal || 0;
+  return committed + memberActiveSessionSeconds(m, now);
+}
+
+function MemberExpOrLevel({ member, done, total, barWidth = 48, barHeight = 5 }) {
+  const level = memberDisplayLevel(member, done, total);
+  if (level != null) {
+    return (
+      <span style={{
+        fontFamily: "var(--hand)", fontSize: 11, fontWeight: 800,
+        color: "var(--point)", letterSpacing: "0.02em",
+      }}>
+        {L("room.levelShort", { n: level })}
+      </span>
+    );
+  }
+  const progress = total > 0 ? Math.min(1, done / total) : 0;
+  return (
+    <span title={L("room.expHint", { done, total })} style={{
+      width: barWidth, height: barHeight, borderRadius: 99,
+      border: "1px solid var(--ink)",
+      background: "var(--paper)", overflow: "hidden", display: "inline-block",
+    }}>
+      <span style={{
+        display: "block", width: `${progress * 100}%`, height: "100%",
+        background: "linear-gradient(90deg, var(--point), var(--hi))",
+        transition: "width 0.35s",
+      }} />
+    </span>
+  );
+}
+
+const ROOM_SUN_SPRITE_IDX = 6; // Sprite-0002 sun (view-today MOODS "happy")
+const ROOM_DISMISS_NEW_DAY_KEY = "todoary.room.dismissedNewDay";
+const ROOM_STATUS_MSG_MAX = 25;
+const ROOM_STATUS_MSG_COOLDOWN_MS = 5 * 60 * 1000;
+
+function clampStatusMessage(raw) {
+  if (raw == null) return "";
+  return String(raw).slice(0, ROOM_STATUS_MSG_MAX);
+}
+
+function statusMessageCooldownRemaining(member, now) {
+  const at = member?.statusMessageAt || 0;
+  if (!at) return 0;
+  const left = ROOM_STATUS_MSG_COOLDOWN_MS - (now - at);
+  return left > 0 ? left : 0;
+}
+
+function formatStatusCooldown(ms) {
+  if (ms <= 0) return "";
+  const totalSec = Math.ceil(ms / 1000);
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min > 0 && sec > 0) return L("room.statusMessageCooldownMinSec", { min, sec });
+  if (min > 0) return L("room.statusMessageCooldownMin", { min });
+  return L("room.statusMessageCooldownSec", { sec });
+}
+
+function roomNoticesStorageKey(roomId) {
+  return `todoary.room.notices.${roomId || "none"}`;
+}
+
+function loadRoomNotices(roomId) {
+  try {
+    const raw = localStorage.getItem(roomNoticesStorageKey(roomId));
+    if (!raw) return { celebrations: [], dismissed: [] };
+    const data = JSON.parse(raw);
+    return {
+      celebrations: Array.isArray(data.celebrations) ? data.celebrations : [],
+      dismissed: Array.isArray(data.dismissed) ? data.dismissed : [],
+    };
+  } catch (_) {
+    return { celebrations: [], dismissed: [] };
+  }
+}
+
+function saveRoomNotices(roomId, data) {
+  try {
+    localStorage.setItem(roomNoticesStorageKey(roomId), JSON.stringify(data));
+  } catch (_) {}
+}
+
+function roomNoticeTickerStyle() {
+  return {
+    position: "relative",
+    marginBottom: 6,
+    height: 26,
+    minHeight: 26,
+    borderRadius: 6,
+    overflow: "hidden",
+    display: "flex",
+    alignItems: "center",
+    background: "linear-gradient(90deg, color-mix(in srgb, #fff 94%, var(--paper)) 0%, color-mix(in srgb, #fff 80%, var(--point)) 50%, color-mix(in srgb, #fff 90%, var(--hi-soft)) 100%)",
+    border: "1px solid color-mix(in srgb, var(--ink-soft) 45%, var(--point))",
+    boxShadow: "0 1px 0 color-mix(in srgb, #fff 75%, var(--paper)) inset",
+    fontFamily: "var(--hand)", fontSize: 12, fontWeight: 700,
+    color: "var(--ink)",
+  };
+}
+
+function RoomDismissibleBanner({ onClose, children, leadingIcon }) {
+  const [hover, setHover] = useStateRoom(false);
+  const label = children == null ? "" : String(children);
+  const segment = (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+      {leadingIcon}
+      <span>{label}</span>
+    </span>
+  );
+
+  return (
+    <div
+      className="room-notice-ticker"
+      style={{ ...roomNoticeTickerStyle(), gap: 4, paddingLeft: 4, paddingRight: 6 }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        title={L("room.dismissNotice")}
+        style={{
+          all: "unset",
+          flexShrink: 0,
+          cursor: hover ? "pointer" : "default",
+          width: hover ? 18 : 0,
+          height: 18,
+          overflow: "hidden",
+          borderRadius: 4,
+          display: "grid",
+          placeItems: "center",
+          border: hover ? "1px solid color-mix(in srgb, var(--ink-soft) 70%, var(--point))" : "none",
+          background: hover ? "color-mix(in srgb, #fff 90%, var(--paper))" : "transparent",
+          fontFamily: "var(--mono)",
+          fontSize: 12,
+          lineHeight: 1,
+          color: "var(--ink-2)",
+          opacity: hover ? 1 : 0,
+          pointerEvents: hover ? "auto" : "none",
+          transition: "opacity 0.15s ease, width 0.15s ease",
+        }}
+      >
+        ×
+      </button>
+      <div
+        className="marquee"
+        style={{ flex: 1, minWidth: 0, height: "100%", display: "flex", alignItems: "center" }}
+      >
+        <span className="marquee-inner room-notice-marquee-inner">
+          {segment}
+          <span aria-hidden>　　</span>
+          {segment}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function isClapLogText(text) {
+  if (!text) return false;
+  const t = String(text);
+  if (/박수|clap|拍手|掌声|👏/i.test(t)) return true;
+  try {
+    const hint = typeof L === "function" ? L("room.clapHint") : "";
+    if (hint && t.includes(hint)) return true;
+  } catch (_) {}
+  return false;
+}
+
+function isClapLogEvent(ev) {
+  return ev && (ev.kind === "clap" || isClapLogText(ev.text));
+}
+
+function celebrationMessage(displayName) {
+  return L("room.celebrate", { name: displayName || L("room.friend") });
+}
+
+function formatClapLogText(fromUid, toUid, nameByUid) {
+  const from = nameByUid.get(fromUid) || L("room.friend");
+  const to = nameByUid.get(toUid) || L("room.friend");
+  return L("room.clapDirected", { from, to });
+}
+
+function collapseClapLogEvents(events) {
+  const out = [];
+  let i = 0;
+  while (i < events.length) {
+    const ev = events[i];
+    if (!isClapLogEvent(ev)) {
+      out.push({ ...ev, collapsed: false });
+      i += 1;
+      continue;
+    }
+    let j = i + 1;
+    while (j < events.length) {
+      const next = events[j];
+      if (!isClapLogEvent(next) || next.uid !== ev.uid) break;
+      if ((next.at || 0) - (events[j - 1].at || 0) > ROOM_LOG_CLAP_GAP_MS) break;
+      j += 1;
+    }
+    const count = j - i;
+    if (count >= 2) {
+      out.push({
+        ...ev,
+        collapsed: true,
+        count,
+        id: `clap-run-${ev.uid}-${ev.at || 0}`,
+        children: events.slice(i, j),
+      });
+      i = j;
+    } else {
+      out.push({ ...ev, collapsed: false });
+      i += 1;
+    }
+  }
+  return out;
+}
+
+// presence — heartbeat write·오프라인 판정 (Firestore 비용과 연동, 값 함께 조정)
+const ROOM_HEARTBEAT_INTERVAL_MS = 4 * 60 * 1000; // setInterval tick
+const ROOM_HEARTBEAT_MIN_AGE_MS = 4 * 60 * 1000;  // 서버 lastActiveAt 이 더 최근이면 write 생략
+const ROOM_MEMBER_OFFLINE_MS = 7 * 60 * 1000;     // 초과 시 오프라인 (interval + 여유 > interval)
+
 function isMemberOffline(m, now) {
   if (!m.lastActiveAt) return true;
-  return (now - m.lastActiveAt) > 5 * 60 * 1000;
+  return (now - m.lastActiveAt) > ROOM_MEMBER_OFFLINE_MS;
 }
 
 // 멤버의 현재 누적 작업시간(초) — 로컬 계산.
 // 본인 commit 못 한 채로 끊기면 (앱 강제 종료 / 통신 끊김) lastActiveAt 을
 // cutoff 로 사용해서 다른 멤버 화면에서도 시계가 마지막 heartbeat 시점에 멈추도록.
 // paused 상태도 동일 — workStartedAt 이 null 이라 acc 만 보여줌.
+/** 진행 중 세션만 — workSecondsTotal 에 아직 반영되지 않은 구간 */
+function memberActiveSessionSeconds(m, now) {
+  if (!m.workStartedAt) return 0;
+  const off = isMemberOffline(m, now);
+  const cutoff = off ? Math.min(m.lastActiveAt || m.workStartedAt, now) : now;
+  if (cutoff <= m.workStartedAt) return 0;
+  return Math.floor((cutoff - m.workStartedAt) / 1000);
+}
+
 function memberLiveSeconds(m, now) {
   const acc = m.accumulatedSecondsToday || 0;
   if (!m.workStartedAt) return acc;
-  // 오프라인(heartbeat 5분 초과)이면 lastActiveAt 까지만 카운트
+  // 오프라인(heartbeat 타임아웃)이면 lastActiveAt 까지만 카운트
   const off = isMemberOffline(m, now);
   const cutoff = off ? Math.min(m.lastActiveAt || m.workStartedAt, now) : now;
   if (cutoff <= m.workStartedAt) return acc;
@@ -74,8 +378,110 @@ function visibleTodoTitle(item) {
 function visibleTodoDone(item) {
   return typeof item === "object" && item ? !!item.done : false;
 }
+function roomVisibleSubTasks(todo) {
+  return (todo?.subTasks || [])
+    .map((st) => {
+      const title = String(st?.title || st || "").trim();
+      if (!title) return null;
+      return { id: st?.id, title, done: !!st.done };
+    })
+    .filter(Boolean);
+}
+function roomVisibleTodoPayload(todo) {
+  return {
+    title: todo.title,
+    done: !!todo.done,
+    subTasks: roomVisibleSubTasks(todo),
+  };
+}
+function visibleTodoSig(item) {
+  const title = visibleTodoTitle(item);
+  const done = visibleTodoDone(item) ? 1 : 0;
+  const subs = (item?.subTasks || []).map((st) => {
+    const stId = typeof st === "object" && st?.id ? st.id : "";
+    const stTitle = typeof st === "string" ? st : (st?.title || "");
+    const stDone = typeof st === "object" && st && st.done ? 1 : 0;
+    return `${stId}:${stDone}:${stTitle}`;
+  }).join(",");
+  return `${done}:${title}|${subs}`;
+}
 function roomTodoView(item, id) {
-  return { id, title: visibleTodoTitle(item), done: visibleTodoDone(item) };
+  const subs = Array.isArray(item?.subTasks)
+    ? item.subTasks.map((st, i) => {
+      const title = typeof st === "string" ? st : (st?.title || "");
+      const trimmed = String(title).trim();
+      const subId = (typeof st === "object" && st?.id) ? st.id : `${id}-s${i}`;
+      return {
+        id: subId,
+        title: trimmed,
+        done: typeof st === "object" && st ? !!st.done : false,
+      };
+    }).filter((s) => s.title)
+    : [];
+  const parentDone = visibleTodoDone(item);
+  const allSubsDone = subs.length > 0 && subs.every((s) => s.done);
+  return {
+    id,
+    title: visibleTodoTitle(item),
+    done: subs.length > 0 ? (parentDone || allSubsDone) : parentDone,
+    subTasks: subs,
+  };
+}
+
+/** 공개 할 일 + 세부목록 행 (채팅·멤버 카드 공용) */
+function RoomPublicTodoRows({ todos, isMe, onToggleTodo, onToggleSub, subIndent = 18 }) {
+  return todos.map((t) => (
+    <React.Fragment key={t.id}>
+      <div style={{
+        display: "flex", alignItems: "flex-start", gap: 6,
+        padding: "2px 0",
+        fontFamily: "var(--hand)", fontSize: 12.5, lineHeight: 1.35,
+        color: "var(--ink)",
+      }}>
+        <button
+          onClick={isMe && onToggleTodo ? () => onToggleTodo(t.id) : undefined}
+          title={isMe ? L("room.toggleDone") : ""}
+          style={{
+            all: "unset", cursor: isMe && onToggleTodo ? "pointer" : "default",
+            width: 10, height: 10, marginTop: 3, flexShrink: 0,
+            border: "1px solid var(--ink)", borderRadius: 2,
+            background: t.done ? "var(--mint)" : "var(--paper)",
+            display: "grid", placeItems: "center",
+            fontSize: 8, color: "#fff",
+          }}
+        >{t.done ? "✓" : ""}</button>
+        <span style={{
+          textDecoration: t.done ? "line-through" : "none",
+          wordBreak: "break-word",
+        }}>{t.title}</span>
+      </div>
+      {(t.subTasks || []).map((st) => (
+        <div key={st.id} style={{
+          display: "flex", alignItems: "flex-start", gap: 5,
+          padding: "1px 0 1px " + subIndent + "px",
+          fontFamily: "var(--hand)", fontSize: 11, lineHeight: 1.3,
+          color: "var(--ink-2)",
+        }}>
+          <button
+            onClick={isMe && onToggleSub ? () => onToggleSub(t.id, st.id) : undefined}
+            title={isMe ? L("room.toggleSubDone") : ""}
+            style={{
+              all: "unset", cursor: isMe && onToggleSub ? "pointer" : "default",
+              width: 8, height: 8, marginTop: 2, flexShrink: 0,
+              border: "1px solid var(--ink-soft)", borderRadius: 2,
+              background: st.done ? "var(--mint)" : "var(--paper)",
+              display: "grid", placeItems: "center",
+              fontSize: 7, color: "#fff",
+            }}
+          >{st.done ? "✓" : ""}</button>
+          <span style={{
+            textDecoration: st.done ? "line-through" : "none",
+            wordBreak: "break-word",
+          }}>{st.title}</span>
+        </div>
+      ))}
+    </React.Fragment>
+  ));
 }
 function memberRoomStatus(member, now, myUid, myStatus) {
   if (member.uid === myUid && myStatus === "away") return "away";
@@ -236,7 +642,18 @@ function EmptyRoomView({ tweaks } = {}) {
       backgroundSize: "200% 200%",
       backgroundPosition: "center",
     }}>
-      {isLocal && <LocalModeBanner />}
+      {isLocal && (
+        <div style={{
+          padding: "6px 10px",
+          background: "var(--cream-soft)",
+          border: "1.1px dashed var(--ink-soft)",
+          borderRadius: 8,
+          fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink-2)",
+          textAlign: "center",
+        }}>
+          🔒 {L("room.localMode")}
+        </div>
+      )}
       <div style={{ textAlign: "center" }}>
         <div style={{ fontFamily: "var(--hand)", fontSize: 18, fontWeight: 800, color: "var(--ink)", letterSpacing: "0.01em" }}>
           {L("room.emptyTitle")}
@@ -534,16 +951,26 @@ function RoomMainView({ tweaks } = {}) {
     if (added.length) setStatusEvents((events) => mergeRoomStatusEvents(events, added));
   }, [statusSig]);
   const completionLog = members
-    .flatMap((m) => Array.isArray(m.recentLog) ? m.recentLog : []);
-  const clapLog = recentClaps.map((c) => ({
-    id: c.id || `clap-${c.fromUid}-${c.toUid}-${c.ts}`,
-    kind: "clap",
-    uid: c.fromUid,
-    nickname: nameByUid.get(c.fromUid) || L("room.friend"),
-    text: L("room.clapHint"),
-    at: c.ts,
-  }));
-  const roomLog = [...completionLog, ...clapLog, ...statusEvents]
+    .flatMap((m) => (Array.isArray(m.recentLog) ? m.recentLog : [])
+      .map((entry) => ({
+        ...entry,
+        uid: entry.uid || m.uid,
+        nickname: entry.nickname || m.displayName || L("room.friend"),
+        at: entry.at || 0,
+      }))
+      .filter((entry) => logIsToday(entry.at, now)));
+  const clapLog = recentClaps
+    .filter((c) => logIsToday(c.ts, now))
+    .map((c) => ({
+      id: c.id || `clap-${c.fromUid}-${c.toUid}-${c.ts}`,
+      kind: "clap",
+      uid: c.fromUid,
+      toUid: c.toUid,
+      nickname: nameByUid.get(c.fromUid) || L("room.friend"),
+      text: formatClapLogText(c.fromUid, c.toUid, nameByUid),
+      at: c.ts,
+    }));
+  const roomLog = [...completionLog, ...clapLog, ...statusEvents.filter((ev) => logIsToday(ev.at, now))]
     .sort((a, b) => (a.at || 0) - (b.at || 0))
     .slice(-50);
   const noticeByUid = new Map();
@@ -578,7 +1005,10 @@ function RoomMainView({ tweaks } = {}) {
   });
 
   const onlineCount = members.filter((m) => !isMemberOffline(m, now)).length;
-  const totalSeconds = members.reduce((sum, m) => sum + memberLiveSeconds(m, now), 0);
+  const roomTotalDisplaySeconds = members.reduce(
+    (sum, m) => sum + memberRoomWorkSeconds(m, now),
+    0,
+  );
 
   // 박수 묶음
   const clapsByMember = recentClaps.reduce((acc, c) => {
@@ -649,7 +1079,12 @@ function RoomMainView({ tweaks } = {}) {
         >{L("room.leave")}</button>
       </div>
 
-      {isLocal && <LocalModeBanner inline />}
+      <RoomNoticeStrip
+        roomId={room.state.currentRoomId}
+        members={sorted}
+        now={now}
+        isLocal={isLocal}
+      />
 
       <div style={{
         flex: 1, minHeight: 0,
@@ -660,14 +1095,16 @@ function RoomMainView({ tweaks } = {}) {
         background: "color-mix(in srgb, var(--paper) 78%, transparent)",
       }}>
         <RoomChatLog
+          roomId={room.state.currentRoomId}
           members={sorted}
           myUid={myUid}
           myTodos={myTodos}
           roomLog={roomLog}
+          roomMeta={roomMeta}
           now={now}
-          totalSeconds={totalSeconds}
-          themeBg={themeBg}
+          totalWorkSeconds={roomTotalDisplaySeconds}
           onToggleTodo={(id) => diary.actions.toggleTodo(id)}
+          onToggleSub={(todoId, subId) => diary.actions.toggleSubTask(todoId, subId)}
         />
         <div style={{ display: "grid", gridTemplateRows: "repeat(4, 1fr)", gap: 6, minHeight: 0 }}>
           {[0, 1, 2, 3].map((i) => {
@@ -695,7 +1132,7 @@ function RoomMainView({ tweaks } = {}) {
         borderRadius: "0 0 9px 9px",
         background: "linear-gradient(180deg, var(--paper) 0%, var(--blue-soft) 100%)",
       }}>
-        <RoomTodoRegisterPanel todos={myTodos} />
+        <RoomTodoRegisterPanel todos={myTodos.filter((t) => !t.dueDate || t.dueDate === today)} />
       </div>
 
       <ProfileEditModal />
@@ -704,7 +1141,223 @@ function RoomMainView({ tweaks } = {}) {
   );
 }
 
-function RoomChatLog({ members, myUid, myTodos, roomLog, now, totalSeconds, themeBg, onToggleTodo }) {
+/** 채팅 하단 박스 — 약 3줄 높이, 휠로 이전 대화 탐색 */
+const ROOM_CHAT_LOG_BOX_HEIGHT = 80;
+
+function buildChatTimeline(roomLog, members, myUid) {
+  const nameByUid = new Map(members.map((m) => [
+    m.uid,
+    m.uid === myUid ? L("room.you") : (m.displayName || L("room.friend")),
+  ]));
+  const raw = (roomLog || [])
+    .map((ev) => ({
+      ...ev,
+      isMe: ev.uid === myUid,
+      label: ev.nickname || nameByUid.get(ev.uid) || L("room.friend"),
+    }))
+    .sort((a, b) => (a.at || 0) - (b.at || 0));
+  return collapseClapLogEvents(raw);
+}
+
+function RoomMemberLogEvents({ events, expandedClaps, setExpandedClaps }) {
+  return events.map((ev, i) => {
+    const isMe = !!ev.isMe;
+    const label = ev.label || ev.nickname || L("room.friend");
+    if (ev.collapsed && isClapLogEvent(ev)) {
+      const open = !!expandedClaps[ev.id];
+      return (
+        <div key={ev.id || `${ev.uid}-${ev.at || 0}-${i}`} style={{ padding: "3px 0 2px 10px" }}>
+          <button
+            type="button"
+            onClick={() => setExpandedClaps((s) => ({ ...s, [ev.id]: !s[ev.id] }))}
+            style={{
+              all: "unset", cursor: "pointer", width: "100%",
+              fontFamily: "var(--hand)", fontSize: 12.5, lineHeight: 1.35, color: "var(--ink-2)",
+            }}
+          >
+            <span style={{ color: isMe ? "var(--point)" : "var(--ink-2)", fontWeight: 700 }}>
+              {ev.nickname || label} say :
+            </span>{" "}
+            {ev.text || L("room.clapCollapsed", { n: ev.count })}{" "}
+            <span style={{ fontSize: 10, color: "var(--ink-3)" }}>{open ? L("room.logCollapse") : L("room.logExpand")}</span>{" "}
+            <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3)" }}>
+              {fmtRoomClock(ev.at)}
+            </span>
+          </button>
+          {open && (ev.children || []).map((ch, j) => (
+            <div key={ch.id || `${ch.uid}-${j}`} style={{
+              padding: "2px 0 2px 18px",
+              fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink-3)",
+            }}>
+              <span style={{ fontWeight: 600 }}>{ch.nickname || label} say :</span> {ch.text}{" "}
+              <span style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{fmtRoomClock(ch.at)}</span>
+            </div>
+          ))}
+        </div>
+      );
+    }
+    return (
+      <div key={ev.id || `${ev.uid}-${ev.at || 0}-${i}`} style={{
+        padding: "3px 0 2px 10px",
+        fontFamily: "var(--hand)", fontSize: 12.5, lineHeight: 1.35,
+        color: isClapLogEvent(ev) ? "var(--ink-2)" : "var(--ink)",
+      }}>
+        <span style={{ color: isMe ? "var(--point)" : "var(--ink-2)", fontWeight: 700 }}>
+          {ev.nickname || label} say :
+        </span>{" "}
+        <span>{ev.text}</span>{" "}
+        <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3)" }}>
+          {fmtRoomClock(ev.at)}
+        </span>
+      </div>
+    );
+  });
+}
+
+function RoomNoticeStrip({ roomId, members, now, isLocal }) {
+  const dayKey = kstYmd(now);
+  const [newDayHidden, setNewDayHidden] = useStateRoom(() => {
+    try { return localStorage.getItem(ROOM_DISMISS_NEW_DAY_KEY) === dayKey; } catch (_) { return false; }
+  });
+  const [celebrations, setCelebrations] = useStateRoom([]);
+  const [dismissedNoticeIds, setDismissedNoticeIds] = useStateRoom(() => new Set());
+  const prevAllDoneRef = useRefRoom({});
+
+  useEffectRoom(() => {
+    try {
+      setNewDayHidden(localStorage.getItem(ROOM_DISMISS_NEW_DAY_KEY) === dayKey);
+    } catch (_) {
+      setNewDayHidden(false);
+    }
+  }, [dayKey]);
+
+  useEffectRoom(() => {
+    if (!roomId) {
+      setCelebrations([]);
+      setDismissedNoticeIds(new Set());
+      prevAllDoneRef.current = {};
+      return;
+    }
+    const stored = loadRoomNotices(roomId);
+    setCelebrations(stored.celebrations.filter((ev) => logIsToday(ev.at, now)));
+    setDismissedNoticeIds(new Set(stored.dismissed));
+    prevAllDoneRef.current = {};
+  }, [roomId]);
+
+  const persistNotices = (nextCelebrations, nextDismissed) => {
+    if (!roomId) return;
+    saveRoomNotices(roomId, {
+      celebrations: nextCelebrations,
+      dismissed: [...nextDismissed],
+    });
+  };
+
+  const membersProgressSig = members.map((m) => `${m.uid}:${m.todoDone || 0}/${m.todoTotal || 0}`).join("|");
+  useEffectRoom(() => {
+    if (!roomId) return;
+    const added = [];
+    members.forEach((m) => {
+      const allDone = (m.todoTotal || 0) > 0 && m.todoDone === m.todoTotal;
+      const had = prevAllDoneRef.current[m.uid];
+      if (had === undefined) {
+        prevAllDoneRef.current[m.uid] = allDone;
+        return;
+      }
+      if (allDone && !had) {
+        added.push({
+          id: `celebrate-${m.uid}-${dayKey}`,
+          kind: "celebration",
+          uid: m.uid,
+          text: celebrationMessage(m.displayName),
+          at: Date.now(),
+        });
+      }
+      prevAllDoneRef.current[m.uid] = allDone;
+    });
+    if (!added.length) return;
+    setCelebrations((prev) => {
+      const byId = new Map(prev.map((ev) => [ev.id, ev]));
+      added.forEach((ev) => byId.set(ev.id, ev));
+      const next = [...byId.values()].filter((ev) => logIsToday(ev.at, now));
+      setDismissedNoticeIds((dismissed) => {
+        persistNotices(next, dismissed);
+        return dismissed;
+      });
+      return next;
+    });
+  }, [membersProgressSig, roomId, dayKey]);
+
+  const dismissNewDay = () => {
+    setNewDayHidden(true);
+    try { localStorage.setItem(ROOM_DISMISS_NEW_DAY_KEY, dayKey); } catch (_) {}
+  };
+
+  const dismissNotice = (id) => {
+    setDismissedNoticeIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      setCelebrations((celebs) => {
+        persistNotices(celebs, next);
+        return celebs;
+      });
+      return next;
+    });
+  };
+
+  const visibleCelebrations = celebrations.filter((ev) => !dismissedNoticeIds.has(ev.id));
+  const hasNotices = isLocal || !newDayHidden || visibleCelebrations.length > 0;
+  if (!hasNotices) return null;
+
+  return (
+    <div style={{
+      flexShrink: 0,
+      borderTop: "1.1px dashed var(--ink-soft)",
+      borderBottom: "1.1px dashed var(--ink-soft)",
+      background: "var(--cream-soft)",
+    }}>
+      {isLocal && (
+        <div style={{
+          padding: "6px 10px",
+          fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink-2)",
+          textAlign: "center",
+          borderBottom: visibleCelebrations.length || !newDayHidden
+            ? "1px dashed var(--ink-soft)" : "none",
+        }}>
+          🔒 {L("room.localMode")}
+        </div>
+      )}
+      <div style={{ padding: isLocal ? "4px 6px 6px" : "6px 6px 6px" }}>
+        {!newDayHidden && (
+          <RoomDismissibleBanner
+            onClose={dismissNewDay}
+            leadingIcon={<SpriteIcon idx={ROOM_SUN_SPRITE_IDX} size={18} style={{ flexShrink: 0 }} />}
+          >
+            {L("room.newDay")}
+          </RoomDismissibleBanner>
+        )}
+        {visibleCelebrations.map((ev) => (
+          <RoomDismissibleBanner key={ev.id} onClose={() => dismissNotice(ev.id)}>
+            {ev.text}
+          </RoomDismissibleBanner>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RoomChatLog({ members, myUid, myTodos, roomLog, roomMeta, now, totalWorkSeconds, onToggleTodo, onToggleSub }) {
+  const [expandedClaps, setExpandedClaps] = useStateRoom({});
+  const chatLogBoxRef = useRefRoom(null);
+
+  const chatTimeline = buildChatTimeline(roomLog, members, myUid);
+  const timelineSig = chatTimeline.map((ev) => ev.id || `${ev.uid}-${ev.at}`).join("|");
+
+  useEffectRoom(() => {
+    const el = chatLogBoxRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [timelineSig]);
+
   return (
     <div style={{
       minHeight: 0,
@@ -719,20 +1372,24 @@ function RoomChatLog({ members, myUid, myTodos, roomLog, now, totalSeconds, them
     }}>
       <div style={{
         flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden",
-        padding: "10px 10px 8px",
+        padding: "10px 10px 0",
         background: "color-mix(in srgb, var(--paper) 80%, transparent)",
       }}>
         {members.map((m) => {
           const isMe = m.uid === myUid;
           const todos = isMe
-            ? myTodos.filter(t => t.roomVisible).map(t => ({ id: t.id, title: t.title, done: t.done }))
+            ? myTodos
+              .filter((t) => t.roomVisible)
+              .filter((t, idx, arr) => arr.findIndex((x) => x.id === t.id) === idx)
+              .slice()
+              .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+              .map((t) => roomTodoView(roomVisibleTodoPayload(t), t.id))
             : Array.isArray(m.visibleTodos)
               ? m.visibleTodos.map((item, i) => roomTodoView(item, `${m.uid}-${i}`))
                   .filter((t) => t.title)
               : [];
           const label = isMe ? L("room.you") : (m.displayName || L("room.friend"));
           const offline = isMemberOffline(m, now);
-          const events = (roomLog || []).filter((ev) => ev.uid === m.uid);
           return (
             <div key={m.uid} style={{ marginBottom: 12, opacity: offline ? 0.55 : 1 }}>
               <div style={{
@@ -751,60 +1408,82 @@ function RoomChatLog({ members, myUid, myTodos, roomLog, now, totalSeconds, them
                 </span>
                 <span>{label} says:</span>
               </div>
-              {todos.length > 0 ? todos.map((t) => (
-                <div key={t.id} style={{
-                  display: "flex", alignItems: "flex-start", gap: 6,
-                  padding: "2px 0 2px 10px",
-                  fontFamily: "var(--hand)", fontSize: 12.5, lineHeight: 1.35,
-                  color: "var(--ink)",
-                }}>
-                  <button
-                    onClick={isMe ? () => onToggleTodo(t.id) : undefined}
-                    title={isMe ? L("room.toggleDone") : ""}
-                    style={{
-                      all: "unset", cursor: isMe ? "pointer" : "default",
-                      width: 10, height: 10, marginTop: 3, flexShrink: 0,
-                      border: "1px solid var(--ink)", borderRadius: 2,
-                      background: t.done ? "var(--mint)" : "var(--paper)",
-                      display: "grid", placeItems: "center",
-                      fontSize: 8, color: "#fff",
-                    }}
-                  >{t.done ? "✓" : ""}</button>
-                  <span style={{
-                    textDecoration: t.done ? "line-through" : "none",
-                    wordBreak: "break-word",
-                  }}>{t.title}</span>
+              {todos.length > 0 ? (
+                <div style={{ paddingLeft: 10 }}>
+                  <RoomPublicTodoRows
+                    todos={todos}
+                    isMe={isMe}
+                    onToggleTodo={onToggleTodo}
+                    onToggleSub={onToggleSub}
+                  />
                 </div>
-              )) : (
+              ) : (
                 <div className="sk-cap" style={{ paddingLeft: 10, fontSize: 11 }}>
                   {isMe ? L("room.noTodo") : L("room.noPublicTitle")}
                 </div>
               )}
-              {events.map((ev, i) => (
-                <div key={ev.id || `${ev.uid}-${ev.at || 0}-${i}`} style={{
-                  padding: "3px 0 2px 10px",
-                  fontFamily: "var(--hand)", fontSize: 12.5, lineHeight: 1.35,
-                  color: "var(--ink)",
-                }}>
-                <span style={{ color: isMe ? "var(--point)" : "var(--ink-2)", fontWeight: 700 }}>{ev.nickname || label} say :</span>{" "}
-                  <span>{ev.text}</span>{" "}
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3)" }}>{fmtRoomClock(ev.at)}</span>
-                </div>
-              ))}
             </div>
           );
         })}
       </div>
       <div style={{
         flexShrink: 0,
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-        padding: "6px 10px",
-        borderTop: "1px dashed var(--ink)",
-        background: "color-mix(in srgb, var(--paper) 80%, transparent)",
-        fontFamily: "var(--hand)", fontSize: 11.5, color: "var(--ink-2)",
+        height: 24,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 8,
+        padding: "0 8px",
+        borderTop: "1.1px solid var(--ink)",
+        background: "linear-gradient(180deg, color-mix(in srgb, var(--paper) 92%, var(--hi-soft)) 0%, color-mix(in srgb, var(--paper) 88%, var(--blue-soft)) 100%)",
+        fontFamily: "var(--hand)",
+        fontSize: 11,
+        color: "var(--ink-2)",
+        boxShadow: "0 1px 0 rgba(255,255,255,0.35) inset",
       }}>
-        <span>{L("room.totalWork")}</span>
-        <span style={{ fontFamily: "var(--mono)", fontSize: 11, fontWeight: 700, color: "var(--ink)" }}>{fmtHMS(totalSeconds || 0)}</span>
+        <span style={{ fontWeight: 700, color: "var(--ink)", whiteSpace: "nowrap" }}>
+          {L("room.totalWork")}
+        </span>
+        <span style={{
+          fontFamily: "var(--mono)", fontSize: 10.5, fontWeight: 700,
+          color: "var(--ink)", whiteSpace: "nowrap",
+        }}>
+          {fmtHMS(totalWorkSeconds || 0)} · D+{roomDaysSinceCreated(roomMeta, now, members)}
+        </span>
+      </div>
+      <div
+        ref={chatLogBoxRef}
+        style={{
+          flexShrink: 0,
+          height: ROOM_CHAT_LOG_BOX_HEIGHT,
+          maxHeight: ROOM_CHAT_LOG_BOX_HEIGHT,
+          overflowY: "auto",
+          overflowX: "hidden",
+          margin: 0,
+          padding: "6px 0 0",
+          borderTop: "1.1px solid var(--ink)",
+          borderRadius: 0,
+          background: "color-mix(in srgb, var(--paper) 92%, var(--blue-soft))",
+          boxShadow: "0 1px 0 rgba(255,255,255,0.35) inset",
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
+        {chatTimeline.length > 0 ? (
+          <div style={{ padding: "4px 0 0" }}>
+            <RoomMemberLogEvents
+              events={chatTimeline}
+              expandedClaps={expandedClaps}
+              setExpandedClaps={setExpandedClaps}
+            />
+          </div>
+        ) : (
+          <div className="sk-cap" style={{
+            fontSize: 11, color: "var(--ink-3)", padding: "6px 0 0",
+          }}
+          >
+            {L("room.logEmpty")}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -819,7 +1498,6 @@ function RoomProfileSlot({ member, isMe, now, claps, displayStatus, notice, onCl
   const clapShow = latestClap && (now - latestClap.ts < 3000);
   const total = member.todoTotal || 0;
   const done = member.todoDone || 0;
-  const progress = total > 0 ? Math.min(1, done / total) : 0;
   const iconHops = displayStatus === "online" || displayStatus === "working";
   return (
     <button onClick={onClick} title={isMe ? L("room.changeProfile") : L("room.clapHint")} style={{
@@ -834,6 +1512,9 @@ function RoomProfileSlot({ member, isMe, now, claps, displayStatus, notice, onCl
       filter: offline ? "grayscale(0.7)" : "none",
     }}>
       {clapShow && <ClapBurst />}
+      {member.statusMessage?.trim() && (
+        <RoomStatusBubble text={member.statusMessage.trim()} offsetTop={notice ? 34 : 6} />
+      )}
       {notice && <RoomNoticeBubble text={notice.text} />}
       <span style={{
         width: 40, height: 40, borderRadius: 8,
@@ -862,18 +1543,47 @@ function RoomProfileSlot({ member, isMe, now, claps, displayStatus, notice, onCl
         </span>
       </span>
       <span style={{ fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink-2)" }}>{fmtHMS(seconds)}</span>
-      <span title={`경험치 ${done}/${total}`} style={{
-        width: 48, height: 5, borderRadius: 99,
-        border: "1px solid var(--ink)",
-        background: "var(--paper)", overflow: "hidden",
-      }}>
-        <span style={{
-          display: "block", width: `${progress * 100}%`, height: "100%",
-          background: "linear-gradient(90deg, var(--point), var(--hi))",
-          transition: "width 0.35s",
-        }} />
-      </span>
+      <MemberExpOrLevel member={member} done={done} total={total} />
     </button>
+  );
+}
+
+/** 상태 메시지 말풍선 (프로필 슬롯 왼쪽) */
+function RoomStatusBubble({ text, offsetTop = 6 }) {
+  return (
+    <div style={{
+      position: "absolute",
+      left: -118,
+      top: offsetTop,
+      zIndex: 18,
+      maxWidth: 112,
+      boxSizing: "border-box",
+      padding: "5px 7px",
+      border: "1.5px solid var(--ink)",
+      borderRadius: 2,
+      background: "var(--paper)",
+      color: "var(--ink)",
+      fontFamily: "var(--hand)",
+      fontSize: 10.5,
+      lineHeight: 1.28,
+      textAlign: "left",
+      wordBreak: "break-all",
+      boxShadow: "2px 2px 0 color-mix(in srgb, var(--ink-soft) 55%, transparent)",
+      pointerEvents: "none",
+    }}>
+      <span style={{
+        position: "absolute",
+        right: -7,
+        top: 14,
+        width: 10,
+        height: 10,
+        background: "var(--paper)",
+        borderRight: "1.5px solid var(--ink)",
+        borderBottom: "1.5px solid var(--ink)",
+        transform: "rotate(-45deg)",
+      }} />
+      <span style={{ position: "relative", zIndex: 1 }}>{text}</span>
+    </div>
   );
 }
 
@@ -971,29 +1681,43 @@ function RoomTodoRegisterPanel({ todos }) {
       }}>
         {todos.length ? todos.map(t => {
           const on = selected.has(t.id);
+          const subs = t.subTasks || [];
           return (
-            <button key={t.id} onClick={() => toggle(t.id)} style={{
-              all: "unset", cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "3px 7px",
-              border: "1px solid var(--ink)",
-              borderRadius: 6,
-              background: on ? "color-mix(in srgb, var(--paper) 80%, var(--blue-soft))" : "color-mix(in srgb, var(--paper) 80%, transparent)",
-              fontFamily: "var(--hand)", fontSize: 12, color: t.done ? "var(--ink-3)" : "var(--ink)",
-            }}>
-              <span style={{
-                width: 11, height: 11, borderRadius: 2,
+            <div key={t.id} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <button onClick={() => toggle(t.id)} style={{
+                all: "unset", cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "3px 7px",
                 border: "1px solid var(--ink)",
-                background: on ? "var(--mint)" : "var(--paper)",
-                display: "grid", placeItems: "center",
-                fontSize: 8, color: "#fff", flexShrink: 0,
-              }}>{on ? "✓" : ""}</span>
-              <span style={{
-                flex: 1, minWidth: 0,
-                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                textDecoration: t.done ? "line-through" : "none",
-              }}>{t.title}</span>
-            </button>
+                borderRadius: 6,
+                background: on ? "color-mix(in srgb, var(--paper) 80%, var(--blue-soft))" : "color-mix(in srgb, var(--paper) 80%, transparent)",
+                fontFamily: "var(--hand)", fontSize: 12, color: t.done ? "var(--ink-3)" : "var(--ink)",
+              }}>
+                <span style={{
+                  width: 11, height: 11, borderRadius: 2,
+                  border: "1px solid var(--ink)",
+                  background: on ? "var(--mint)" : "var(--paper)",
+                  display: "grid", placeItems: "center",
+                  fontSize: 8, color: "#fff", flexShrink: 0,
+                }}>{on ? "✓" : ""}</span>
+                <span style={{
+                  flex: 1, minWidth: 0,
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  textDecoration: t.done ? "line-through" : "none",
+                }}>{t.title}</span>
+              </button>
+              {on && subs.length > 0 && subs.map((st) => (
+                <div key={st.id} style={{
+                  paddingLeft: 22, paddingRight: 4,
+                  fontFamily: "var(--hand)", fontSize: 10.5, lineHeight: 1.25,
+                  color: st.done ? "var(--ink-3)" : "var(--ink-2)",
+                  textDecoration: st.done ? "line-through" : "none",
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                }}>
+                  · {st.title}
+                </div>
+              ))}
+            </div>
           );
         }) : (
           <div className="sk-cap" style={{ padding: "4px 2px", fontSize: 11 }}>{L("room.noTodayTasks")}</div>
@@ -1074,7 +1798,15 @@ function MemberCard({ member, isMe, now, onClap, claps, selfTodos, onEditProfile
   let visibleTodos = null;
   if (isMe && selfTodos) {
     visibleTodos = selfTodos.map((t) => ({
-      id: t.id, title: t.title, done: t.done, roomVisible: !!t.roomVisible,
+      id: t.id,
+      title: t.title,
+      done: t.done,
+      roomVisible: !!t.roomVisible,
+      subTasks: (t.subTasks || []).map((st, i) => ({
+        id: st.id || `${t.id}-s${i}`,
+        title: st.title,
+        done: !!st.done,
+      })),
     }));
   } else if (!isMe && Array.isArray(member.visibleTodos) && member.visibleTodos.length > 0) {
     visibleTodos = member.visibleTodos
@@ -1136,44 +1868,66 @@ function MemberCard({ member, isMe, now, onClap, claps, selfTodos, onEditProfile
           {visibleTodos && visibleTodos.length > 0 ? (
             visibleTodos.map((t, i) => {
               const isPrivate = isMe && !t.roomVisible;
+              const showSubs = !isPrivate && (t.subTasks || []).length > 0;
               return (
-                <div key={t.id || i} style={{
-                  display: "flex", alignItems: "center", gap: 5, marginBottom: 2,
-                  fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.25,
-                  color: t.done ? "var(--ink-3)" : "var(--ink-2)",
-                  textDecoration: t.done ? "line-through" : "none",
-                  opacity: isPrivate ? 0.55 : 1,
-                }}>
-                  <span style={{
-                    flexShrink: 0,
-                    width: 9, height: 9, borderRadius: 2,
-                    border: "1.1px solid " + (t.done ? "var(--ink-3)" : "var(--ink-2)"),
-                    background: t.done ? "var(--mint)" : "transparent",
-                    display: "grid", placeItems: "center",
-                    fontSize: 8,
-                  }}>{t.done ? "✓" : ""}</span>
-                  <span style={{
-                    flex: 1, minWidth: 0,
-                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                  }}>{t.title}</span>
-                  {isMe && (
-                    <button
-                      onClick={() => diary.actions.toggleTodoVisible(t.id)}
-                      title={t.roomVisible ? L("room.visibleTip") : L("room.privateTip")}
-                      style={{
-                        all: "unset", cursor: "pointer",
-                        width: 16, height: 14, borderRadius: 4,
-                        display: "grid", placeItems: "center",
-                        fontSize: 9, flexShrink: 0,
-                        background: t.roomVisible ? "var(--hi)" : "transparent",
-                        border: t.roomVisible ? "1px solid var(--ink)" : "1px solid var(--ink-soft)",
-                        filter: t.roomVisible ? "none" : "grayscale(1)",
-                        opacity: t.roomVisible ? 1 : 0.45,
-                      }}
-                    >
-                      👁
-                    </button>
-                  )}
+                <div key={t.id || i} style={{ marginBottom: 2, opacity: isPrivate ? 0.55 : 1 }}>
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 5,
+                    fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.25,
+                    color: t.done ? "var(--ink-3)" : "var(--ink-2)",
+                    textDecoration: t.done ? "line-through" : "none",
+                  }}>
+                    <span style={{
+                      flexShrink: 0,
+                      width: 9, height: 9, borderRadius: 2,
+                      border: "1.1px solid " + (t.done ? "var(--ink-3)" : "var(--ink-2)"),
+                      background: t.done ? "var(--mint)" : "transparent",
+                      display: "grid", placeItems: "center",
+                      fontSize: 8,
+                    }}>{t.done ? "✓" : ""}</span>
+                    <span style={{
+                      flex: 1, minWidth: 0,
+                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                    }}>{t.title}</span>
+                    {isMe && (
+                      <button
+                        onClick={() => diary.actions.toggleTodoVisible(t.id)}
+                        title={t.roomVisible ? L("room.visibleTipSub") : L("room.privateTipSub")}
+                        style={{
+                          all: "unset", cursor: "pointer",
+                          width: 16, height: 14, borderRadius: 4,
+                          display: "grid", placeItems: "center",
+                          fontSize: 9, flexShrink: 0,
+                          background: t.roomVisible ? "var(--hi)" : "transparent",
+                          border: t.roomVisible ? "1px solid var(--ink)" : "1px solid var(--ink-soft)",
+                          filter: t.roomVisible ? "none" : "grayscale(1)",
+                          opacity: t.roomVisible ? 1 : 0.45,
+                        }}
+                      >
+                        👁
+                      </button>
+                    )}
+                  </div>
+                  {showSubs && (t.subTasks || []).map((st) => (
+                    <div key={st.id} style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      paddingLeft: 14, marginTop: 1,
+                      fontFamily: "var(--hand)", fontSize: 10.5, lineHeight: 1.2,
+                      color: st.done ? "var(--ink-3)" : "var(--ink-2)",
+                      textDecoration: st.done ? "line-through" : "none",
+                    }}>
+                      <span style={{
+                        width: 7, height: 7, borderRadius: 2, flexShrink: 0,
+                        border: "1px solid var(--ink-soft)",
+                        background: st.done ? "var(--mint)" : "transparent",
+                        display: "grid", placeItems: "center", fontSize: 6,
+                      }}>{st.done ? "✓" : ""}</span>
+                      <span style={{
+                        flex: 1, minWidth: 0,
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                      }}>{st.title}</span>
+                    </div>
+                  ))}
                 </div>
               );
             })
@@ -1229,33 +1983,44 @@ function MemberCard({ member, isMe, now, onClap, claps, selfTodos, onEditProfile
         </div>
       </div>
 
-      {/* 하단: 진행도 바 (채팅 입력칸 자리) */}
+      {/* 하단: 경험치 바 또는 레벨 */}
       <div style={{
         flexShrink: 0,
         padding: "5px 9px 7px",
         borderTop: "1px dashed var(--ink-soft)",
-        display: "flex", alignItems: "center", gap: 7,
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
+        minHeight: 22,
       }}>
-        <div style={{
-          flex: 1, height: 8, borderRadius: 99,
-          background: "var(--paper-3)", overflow: "hidden",
-          border: "1px solid var(--ink-soft)",
-          position: "relative",
-        }}>
-          <div style={{
-            width: `${progress * 100}%`, height: "100%",
-            background: progress >= 1
-              ? "linear-gradient(90deg, var(--mint), var(--green))"
-              : (isWorking ? "linear-gradient(90deg, var(--pink), var(--hi))" : "var(--ink-soft)"),
-            transition: "width 0.4s",
-          }} />
-        </div>
-        <span style={{
-          fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, color: "var(--ink-2)",
-          minWidth: 32, textAlign: "right",
-        }}>
-          {done}/{total}
-        </span>
+        {memberDisplayLevel(member, done, total) != null ? (
+          <span style={{
+            fontFamily: "var(--hand)", fontSize: 13, fontWeight: 800,
+            color: "var(--point)",
+          }}>
+            {L("room.levelShort", { n: memberDisplayLevel(member, done, total) })}
+          </span>
+        ) : (
+          <>
+            <div style={{
+              flex: 1, height: 8, borderRadius: 99,
+              background: "var(--paper-3)", overflow: "hidden",
+              border: "1px solid var(--ink-soft)",
+            }}>
+              <div style={{
+                width: `${progress * 100}%`, height: "100%",
+                background: isWorking
+                  ? "linear-gradient(90deg, var(--pink), var(--hi))"
+                  : "linear-gradient(90deg, var(--point), var(--hi))",
+                transition: "width 0.4s",
+              }} />
+            </div>
+            <span style={{
+              fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, color: "var(--ink-2)",
+              minWidth: 32, textAlign: "right",
+            }}>
+              {done}/{total}
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1383,38 +2148,60 @@ function ClapBurst() {
   );
 }
 
-// ---- 로컬 모드 배너 ----
-function LocalModeBanner({ inline = false }) {
-  return (
-    <div style={{
-      padding: "6px 10px",
-      background: inline ? "var(--cream-soft)" : "var(--cream-soft)",
-      borderTop: inline ? "1.1px dashed var(--ink-soft)" : "none",
-      borderBottom: inline ? "1.1px dashed var(--ink-soft)" : "1.1px solid var(--ink-soft)",
-      borderRadius: inline ? 0 : 8,
-      fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink-2)",
-      textAlign: "center",
-    }}>
-      🔒 {L("room.localMode")}
-    </div>
-  );
-}
-
 // ---- 프로필 편집 모달 ----
 function ProfileEditModal() {
   const room = window.roomStore.useRoom();
   const [open, setOpen] = useStateRoom(false);
   const [name, setName] = useStateRoom(room.state.profile.displayName || "");
+  const [statusMsg, setStatusMsg] = useStateRoom("");
+  const [tick, setTick] = useStateRoom(0);
+  const myUid = window.firebaseBridge ? window.firebaseBridge.uid() : null;
+  const me = room.state.members.find((m) => m.uid === myUid);
+  const now = Date.now();
 
   useEffectRoom(() => {
-    const h = () => { setName(room.state.profile.displayName || ""); setOpen(true); };
+    const h = () => {
+      const uid = window.firebaseBridge ? window.firebaseBridge.uid() : null;
+      const member = room.state.members.find((m) => m.uid === uid);
+      setName(room.state.profile.displayName || "");
+      setStatusMsg(member?.statusMessage || "");
+      setOpen(true);
+    };
     window.addEventListener("room-edit-profile", h);
     return () => window.removeEventListener("room-edit-profile", h);
-  }, [room.state.profile.displayName]);
+  }, [room.state.profile.displayName, room.state.members]);
+
+  useEffectRoom(() => {
+    if (!open) return;
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [open]);
 
   if (!open) return null;
+  void tick;
   const close = () => setOpen(false);
-  const save = () => { room.setProfile({ displayName: name.trim() }); close(); };
+  const prevStatus = me?.statusMessage || "";
+  const nextStatus = clampStatusMessage(statusMsg);
+  const statusChanged = nextStatus !== prevStatus;
+  const cooldownLeft = statusChanged ? statusMessageCooldownRemaining(me, now) : 0;
+  const statusBlocked = statusChanged && cooldownLeft > 0;
+
+  const save = () => {
+    room.setProfile({ displayName: name.trim() });
+    if (statusChanged) {
+      if (statusBlocked) {
+        window.dispatchEvent(new CustomEvent("room-flash", {
+          detail: { msg: formatStatusCooldown(cooldownLeft) },
+        }));
+        return;
+      }
+      room.patchMyMemberImmediate({
+        statusMessage: nextStatus,
+        statusMessageAt: Date.now(),
+      });
+    }
+    close();
+  };
 
   return (
     <div onClick={close} style={{
@@ -1441,6 +2228,29 @@ function ProfileEditModal() {
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
           autoFocus
           style={{ ...formInput, width: "100%" }} />
+        <div className="sk-label" style={{ marginBottom: 6, marginTop: 12 }}>{L("room.statusMessageLabel")}</div>
+        <input
+          value={statusMsg}
+          onChange={(e) => setStatusMsg(clampStatusMessage(e.target.value))}
+          onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+          maxLength={ROOM_STATUS_MSG_MAX}
+          placeholder={L("room.statusMessagePh")}
+          style={{ ...formInput, width: "100%" }}
+        />
+        <div style={{
+          marginTop: 4, fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3)",
+          display: "flex", justifyContent: "space-between", gap: 8,
+        }}>
+          <span>{L("room.statusMessageHint")}</span>
+          <span>{statusMsg.length}/{ROOM_STATUS_MSG_MAX}</span>
+        </div>
+        {statusBlocked && (
+          <div style={{
+            marginTop: 6, fontFamily: "var(--hand)", fontSize: 11, color: "var(--point)",
+          }}>
+            {formatStatusCooldown(cooldownLeft)}
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 12 }}>
           <button onClick={close} style={smallBtn}>{L("common.cancel")}</button>
           <button onClick={save} style={smallBtnPrimary}>{L("common.save")}</button>
@@ -1499,7 +2309,7 @@ function useRoomSync() {
   // 공개로 표시한 할일 제목들 — 효과 deps 에 sig 형태로 들어가서 변경 감지
   const visibleTitlesSig = todayTodos
     .filter((t) => t.roomVisible)
-    .map((t) => (t.done ? "1" : "0") + ":" + (t.order ?? 0) + ":" + (t.pinned ? "p" : "") + ":" + t.title)
+    .map((t) => (t.order ?? 0) + ":" + (t.pinned ? "p" : "") + ":" + visibleTodoSig(roomVisibleTodoPayload(t)))
     .join("|");
 
   // 작업 중 여부 — 외부모드 ON 이거나, 트래커가 "활성"으로 보는 상황 ≈ workSessions가 방금 갱신됨
@@ -1528,17 +2338,14 @@ function useRoomSync() {
     const meTodoTotal = me?.todoTotal ?? -1;
     const meTodoDone = me?.todoDone ?? -1;
     const meVisibleSig = Array.isArray(me?.visibleTodos)
-      ? me.visibleTodos.map((item) => `${visibleTodoDone(item) ? 1 : 0}:${visibleTodoTitle(item)}`).join("|")
+      ? me.visibleTodos.map((item) => visibleTodoSig(item)).join("|")
       : "";
     let logEntry = null;
     const doneMap = new Map(todayTodos.map((t) => [t.id, { done: !!t.done, title: t.title, visible: !!t.roomVisible }]));
-    if (myStatus === "away") {
-      prevDoneRef.current = doneMap;
-      return;
-    }
+    const isAway = myStatus === "away";
     if (!prevDoneRef.current) {
       prevDoneRef.current = doneMap;
-    } else {
+    } else if (!isAway) {
       doneMap.forEach((cur, id) => {
         if (logEntry) return;
         const prev = prevDoneRef.current.get(id);
@@ -1553,23 +2360,32 @@ function useRoomSync() {
         }
       });
       prevDoneRef.current = doneMap;
+    } else {
+      prevDoneRef.current = doneMap;
     }
 
     // 진행도 — me 기준 비교 (서버에 이미 같은 값이면 skip)
     if (todoTotal !== meTodoTotal) patch.todoTotal = todoTotal;
     if (todoDone !== meTodoDone) patch.todoDone = todoDone;
 
+    const todayAllDone = todoTotal > 0 && todoDone >= todoTotal;
+    const meLevelDay = me?.lastLevelDay || null;
+    const meRoomLevel = me?.roomLevel || 0;
+    if (todayAllDone && meLevelDay !== today) {
+      patch.roomLevel = meRoomLevel + 1;
+      patch.lastLevelDay = today;
+    }
+
     // ★ 공개 표시한 할일의 "제목"만. 비공개 제목은 여기서 누락 → 서버에 절대 안 올라감.
     const visibleTodosToSend = todayTodos
       .filter((t) => t.roomVisible)
       .slice()
       .sort((a, b) => {
-        if (a.done !== b.done) return a.done ? 1 : -1;
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
         return (a.order ?? 0) - (b.order ?? 0);
       })
-      .map((t) => ({ title: t.title, done: !!t.done }));
-    const visibleSig = visibleTodosToSend.map((t) => `${t.done ? 1 : 0}:${t.title}`).join("|");
+      .map((t) => roomVisibleTodoPayload(t));
+    const visibleSig = visibleTodosToSend.map((t) => visibleTodoSig(t)).join("|");
     if (visibleSig !== meVisibleSig) {
       patch.visibleTodos = visibleTodosToSend;
     }
@@ -1577,8 +2393,8 @@ function useRoomSync() {
     // ===== 세션 (workStartedAt / accumulatedSecondsToday) =====
     // me 기준이라 앱 재시작 시에도 일관 — 죽기 전 session 이 me 에 살아 있으면
     // 그걸 lastActiveAt 까지 commit 하고 새 세션을 시작.
-    const sessionShouldEnd = !workingNow && meWorkStartedAt;
-    const sessionShouldStart = workingNow && !meWorkStartedAt;
+    const sessionShouldEnd = !isAway && !workingNow && meWorkStartedAt;
+    const sessionShouldStart = !isAway && workingNow && !meWorkStartedAt;
 
     if (sessionShouldEnd) {
       // 종료 — cutoff = lastActiveAt (있고 workStartedAt 보다 늦으면) 또는 now
@@ -1589,12 +2405,14 @@ function useRoomSync() {
       patch.workStartedAt = null;
       patch.accumulatedSecondsToday = meAcc + ranSec;
       patch.accumulatedDate = today;
+      if (ranSec > 0) {
+        patch.workSecondsTotal = (me?.workSecondsTotal || 0) + ranSec;
+      }
     } else if (sessionShouldStart) {
       patch.workStartedAt = true;
     }
 
-    // 자리비움은 로컬 전용 모드라 서버 상태/heartbeat 를 쓰지 않는다.
-    if (myStatus !== meStatus) {
+    if (!isAway && myStatus !== meStatus) {
       patch.status = myStatus;
     }
 
@@ -1602,19 +2420,23 @@ function useRoomSync() {
       room.patchMyMember(patch, logEntry);
     }
   }, [roomId, myUid, todoTotal, todoDone, workingNow, visibleTitlesSig, myStatus,
-      me?.workStartedAt, me?.accumulatedSecondsToday, me?.status,
-      me?.todoTotal, me?.todoDone]);
+      me?.workStartedAt, me?.accumulatedSecondsToday, me?.workSecondsTotal, me?.status,
+      me?.todoTotal, me?.todoDone, me?.roomLevel, me?.lastLevelDay]);
 
   // (showTodoTitle 변화 감지는 위 메인 effect 의 deps 에 me?.showTodoTitle 가 들어 있어
   // currentTodoTitle/recentTodos 가 같은 patch 로 묶여 함께 나감 — 별도 effect 필요 없음)
 
-  // Heartbeat — 2분 마다. paused/away 는 비용 0 모드라 멈춤.
+  // Heartbeat — 4분 tick, lastActiveAt 로컬 가드. paused/away 는 write 없음.
   useEffectRoom(() => {
     if (!roomId || !myUid) return;
     if (myStatus === "paused" || myStatus === "away") return;
-    const id = setInterval(() => {
-      room.patchMyMember({}); // 빈 patch 라도 updateMyMember 가 lastActiveAt 만 갱신함
-    }, 2 * 60 * 1000);
+    const tick = () => {
+      const member = window.roomStore.getS().members.find((m) => m.uid === myUid);
+      const lastAt = member?.lastActiveAt || 0;
+      if (lastAt && (Date.now() - lastAt) < ROOM_HEARTBEAT_MIN_AGE_MS) return;
+      room.patchMyMember({});
+    };
+    const id = setInterval(tick, ROOM_HEARTBEAT_INTERVAL_MS);
     return () => clearInterval(id);
   }, [roomId, myUid, myStatus]);
 
@@ -1744,6 +2566,15 @@ if (!document.getElementById("room-anim-css")) {
       0%, 36%, 100% { transform: translateY(0); }
       37%, 62%      { transform: translateY(-3px); }
       63%, 72%      { transform: translateY(-1px); }
+    }
+    .room-notice-ticker .marquee-inner.room-notice-marquee-inner {
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      animation-duration: 18s;
+    }
+    .room-notice-ticker:hover .room-notice-marquee-inner {
+      animation-play-state: paused;
     }
   `;
   document.head.appendChild(s);

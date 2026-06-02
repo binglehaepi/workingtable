@@ -90,6 +90,13 @@
     if (unsubRoom) { unsubRoom(); unsubRoom = null; }
   }
 
+  function openRoom(roomId) {
+    if (!roomId) return;
+    saveCurrentRoomId(roomId);
+    setS({ currentRoomId: roomId });
+    attachToRoom(roomId);
+  }
+
   function attachToRoom(roomId) {
     detachAll();
     if (!roomId) {
@@ -242,6 +249,16 @@
   const PATCH_DEBOUNCE_MS = 500;
   let pendingPatch = null;
   let pendingTimer = null;
+  /** 상태 메시지 등 — 사용자가 저장 버튼을 눌렀을 때 즉시 1회 write */
+  function patchMyMemberImmediate(patch) {
+    const fb = window.firebaseBridge;
+    if (!fb || !state.currentRoomId || !fb.uid() || !patch || Object.keys(patch).length === 0) return;
+    const merged = { ...(pendingPatch || {}), ...patch };
+    pendingPatch = null;
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    fb.members.updateMine(state.currentRoomId, fb.uid(), merged).catch(() => {});
+  }
+
   function patchMyMember(patch, logEntry = null) {
     const fb = window.firebaseBridge;
     if (!fb || !state.currentRoomId || !fb.uid()) return;
@@ -284,6 +301,7 @@
       setMyStatus,
       sendClap,
       patchMyMember,
+      patchMyMemberImmediate,
       avatars: AVATARS,
       randomAvatar,
     };
@@ -291,8 +309,8 @@
 
   window.roomStore = {
     useRoom, subscribe, getS,
-    bootstrap, createRoom, joinByCode, leaveRoom, setProfile, setMyStatus, sendClap, patchMyMember,
-    attachToRoom, detachAll,
+    bootstrap, createRoom, joinByCode, leaveRoom, setProfile, setMyStatus, sendClap, patchMyMember, patchMyMemberImmediate,
+    openRoom, attachToRoom, detachAll,
     AVATARS, randomAvatar, makeInviteCode,
   };
 })();
