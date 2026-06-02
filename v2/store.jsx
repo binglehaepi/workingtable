@@ -241,6 +241,13 @@ function seed() {
       soundType: "chime",
     },
     workSessions: [],
+    workSessionLogs: [],
+    workTrack: {
+      showSeconds: false,
+      dailyGoalMin: 0,
+      autoPauseIdleMin: 0,
+      autoPauseOnBlur: false,
+    },
     songPlays: {},
   };
 }
@@ -333,6 +340,11 @@ function load() {
       // 작업방 공개 여부 — 기본 false (비공개). 사용자가 켠 항목만 방 멤버에게 제목 노출.
       roomVisible: !!t.roomVisible,
     }));
+    const todosBefore = data.todos;
+    data.todos = reconcileRecurrenceTodos(data.todos);
+    if (data.todos !== todosBefore) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch (_) {}
+    }
     data.timer ??= {
       workMin: 25, breakMin: 5, lengthMin: 25, phase: "idle",
       enabled: true, cycleStartedAt: null, paused: false, pausedRemainingMs: null,
@@ -355,6 +367,15 @@ function load() {
       projectId: w.projectId !== undefined ? w.projectId : null,
       minutes: w.minutes ?? 0,
     }));
+    data.workSessionLogs ??= [];
+    data.workTrack ??= {};
+    data.workTrack = {
+      showSeconds: false,
+      dailyGoalMin: 0,
+      autoPauseIdleMin: 0,
+      autoPauseOnBlur: false,
+      ...data.workTrack,
+    };
     data.songPlays   ??= {};
     // 프로젝트에 버전/저장소 필드 보강 (기존 값 우선)
     data.projects = (data.projects ?? []).map(p => ({
@@ -404,6 +425,91 @@ function completionDay(t) {
   const fromCreated = localDayFromIso(t.createdAt)
     || (String(t.createdAt || "").match(/^\d{4}-\d{2}-\d{2}/)?.[0] || null);
   return fromCreated || today();
+}
+
+/** 기간+반복 템플릿(recurrenceId+start/end)과 옛 dueDate 인스턴스(generateRecurrences) 공존 시 정리 */
+function reconcileRecurrenceTodos(todos) {
+  const list = todos ?? [];
+  const periodTemplateIds = new Set();
+  const periodRecIds = new Set();
+
+  for (const t of list) {
+    if (!t.recurrenceId || !normalizedTodoPeriod(t)) continue;
+    periodRecIds.add(t.recurrenceId);
+    periodTemplateIds.add(t.id);
+  }
+  if (!periodRecIds.size) return list;
+
+  const seenCompletions = new Set();
+  const out = [];
+  let changed = false;
+
+  for (const td of list) {
+    if (!td.recurrenceId || !periodRecIds.has(td.recurrenceId)) {
+      out.push(td);
+      continue;
+    }
+    if (periodTemplateIds.has(td.id)) {
+      if (td.dueDate) {
+        out.push({ ...td, dueDate: null });
+        changed = true;
+      } else {
+        out.push(td);
+      }
+      continue;
+    }
+    if (normalizedTodoPeriod(td)) {
+      out.push(td);
+      continue;
+    }
+
+    // 옛 main 방식: 같은 recurrenceId의 dueDate 일일 인스턴스
+    if (td.dueDate && !td.done) {
+      changed = true;
+      continue;
+    }
+    if (td.dueDate && td.done) {
+      const day = (td.completedDay && /^\d{4}-\d{2}-\d{2}$/.test(td.completedDay))
+        ? td.completedDay
+        : td.dueDate;
+      const key = `${td.recurrenceId}|${day}`;
+      if (seenCompletions.has(key)) {
+        changed = true;
+        continue;
+      }
+      seenCompletions.add(key);
+      if (td.dueDate !== null || td.completedDay !== day) changed = true;
+      out.push({
+        ...td,
+        dueDate: null,
+        completedDay: day,
+        completedAt: td.completedAt || completedAtNow(),
+      });
+      continue;
+    }
+    if (!td.dueDate && td.done) {
+      const day = completionDay(td);
+      if (!day) {
+        out.push(td);
+        continue;
+      }
+      const key = `${td.recurrenceId}|${day}`;
+      if (seenCompletions.has(key)) {
+        changed = true;
+        continue;
+      }
+      seenCompletions.add(key);
+      out.push(td);
+      continue;
+    }
+    if (!td.done && !td.dueDate) {
+      changed = true;
+      continue;
+    }
+    out.push(td);
+  }
+
+  return changed ? out : list;
 }
 
 /** 작업한 날(YYYY-MM-DD) 집합 — 트래커 분·완료한 할 일 기준, 프로젝트 무관 */
@@ -762,11 +868,11 @@ const actions = {
   setTodoPeriod(id, startDate, endDate) {
     setState(s => ({
       ...s,
-      todos: s.todos.map(t => t.id === id ? {
+      todos: reconcileRecurrenceTodos(s.todos.map(t => t.id === id ? {
         ...t,
         startDate: startDate || null,
         endDate: endDate || null,
-      } : t),
+      } : t)),
     }));
   },
   // 기간·반복 일정 해제 — 추가했던 날짜(createdAt)로 되돌림
@@ -933,7 +1039,13 @@ const actions = {
     });
   },
   updateTodo(id, patch) {
-    setState(s => ({ ...s, todos: s.todos.map(t => t.id === id ? { ...t, ...patch } : t) }));
+    setState(s => {
+      const touchesSchedule = patch && (
+        "recurrenceId" in patch || "startDate" in patch || "endDate" in patch || "dueDate" in patch
+      );
+      const todos = s.todos.map(t => t.id === id ? { ...t, ...patch } : t);
+      return { ...s, todos: touchesSchedule ? reconcileRecurrenceTodos(todos) : todos };
+    });
   },
   addTodoFromSnapshot(todo, opts = {}) {
     const title = String(todo?.title || "").trim();
@@ -1531,7 +1643,13 @@ const actions = {
     setState(s => ({ ...s, timer: { ...s.timer, notificationsGranted: g } }));
   },
   setPomoSettings(patch) {
-    setState(s => ({ ...s, timer: { ...s.timer, ...patch } }));
+    setState(s => {
+      const t = { ...s.timer, ...patch };
+      if (s.timer.phase === "idle" && patch.workMin != null) {
+        t.lengthMin = patch.workMin;
+      }
+      return { ...s, timer: t };
+    });
   },
 
   // ----- 작업 시간 트래킹 (날짜 × 프로젝트) -----
@@ -1569,6 +1687,83 @@ const actions = {
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("work-minutes-reset", { detail: { date: d, projectId } }));
     }
+  },
+  // 오늘(또는 지정 날짜) 총 작업 분 — 해당 날짜 세션 전체를 현재 프로젝트 한 건으로 교체.
+  setWorkMinutes(minutes, date, projectId) {
+    const d = date || today();
+    const m = Math.max(0, Math.floor(Number(minutes) || 0));
+    setState(s => {
+      const pid = projectId !== undefined ? projectId : (s.currentProjectId ?? null);
+      const sessions = (s.workSessions ?? []).filter(w => w.date !== d);
+      if (m > 0) {
+        sessions.push({ date: d, projectId: pid, minutes: m, lastTs: Date.now() });
+      }
+      return { ...s, workSessions: sessions };
+    });
+  },
+  setWorkMinutesForProject(minutes, date, projectId) {
+    const d = date || today();
+    const m = Math.max(0, Math.floor(Number(minutes) || 0));
+    setState(s => {
+      const pid = projectId !== undefined ? projectId : (s.currentProjectId ?? null);
+      const sessions = (s.workSessions ?? []).slice();
+      const idx = sessions.findIndex(w => w.date === d && w.projectId === pid);
+      if (m <= 0) {
+        if (idx >= 0) sessions.splice(idx, 1);
+      } else if (idx >= 0) {
+        sessions[idx] = { ...sessions[idx], minutes: m, lastTs: Date.now() };
+      } else {
+        sessions.push({ date: d, projectId: pid, minutes: m, lastTs: Date.now() });
+      }
+      return { ...s, workSessions: sessions };
+    });
+  },
+  setWorkTrackSettings(patch) {
+    setState(s => ({
+      ...s,
+      workTrack: { ...(s.workTrack ?? {}), ...patch },
+    }));
+  },
+  startWorkSessionLog(projectId) {
+    const d = today();
+    const id = uid();
+    setState(s => ({
+      ...s,
+      workSessionLogs: [
+        ...(s.workSessionLogs ?? []),
+        {
+          id,
+          date: d,
+          projectId: projectId !== undefined ? projectId : (s.currentProjectId ?? null),
+          startTs: Date.now(),
+          endTs: null,
+        },
+      ],
+    }));
+    return id;
+  },
+  endWorkSessionLog() {
+    const d = today();
+    const now = Date.now();
+    setState(s => {
+      const logs = (s.workSessionLogs ?? []).slice();
+      for (let i = logs.length - 1; i >= 0; i--) {
+        if (logs[i].date === d && !logs[i].endTs) {
+          logs[i] = { ...logs[i], endTs: now };
+          break;
+        }
+      }
+      return { ...s, workSessionLogs: logs };
+    });
+  },
+  closeOrphanWorkSessionLogs() {
+    const now = Date.now();
+    setState(s => ({
+      ...s,
+      workSessionLogs: (s.workSessionLogs ?? []).map(log =>
+        log.endTs ? log : { ...log, endTs: now }
+      ),
+    }));
   },
 
   // ----- 곡 재생 카운트 (날짜·videoId 별) -----
@@ -1644,6 +1839,16 @@ const select = {
   },
   /** 연속 작업일 — workSessions·완료 할 일 기준 (일기 retros 아님) */
   workStreak: (s) => computeWorkStreak(s),
+  workSessionLogsForDate: (s, date) => (s.workSessionLogs ?? [])
+    .filter(l => l.date === date)
+    .sort((a, b) => (a.startTs || 0) - (b.startTs || 0)),
+  workTrackSettings: (s) => ({
+    showSeconds: false,
+    dailyGoalMin: 0,
+    autoPauseIdleMin: 0,
+    autoPauseOnBlur: false,
+    ...(s.workTrack ?? {}),
+  }),
   // 하루 단위 통합 — 그 날의 할 일(마감 + 그 날 완료) / 작업분 / 회고 / 톱 곡
   dayBundle: (s, date) => {
     const pid = s.currentProjectId;
@@ -1651,7 +1856,11 @@ const select = {
     const t = today();
     const items = todos.filter(todo => matchesTodoDay(todo, date, t));
     const totalSec = items.reduce((sum, t) => sum + (t.trackedSeconds || 0), 0);
-    const sess = (s.workSessions ?? []).find(w => w.date === date);
+    const workMinutes = (s.workSessions ?? []).reduce(
+      (sum, w) => w.date === date ? sum + (w.minutes || 0) : sum, 0
+    );
+    const sess = (s.workSessions ?? []).filter(w => w.date === date)
+      .sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0))[0];
     // 그 날 가장 많이 들은 곡
     const plays = (s.songPlays ?? {})[date] ?? {};
     let topSong = null;
@@ -1666,7 +1875,7 @@ const select = {
       doneCount: items.filter(t => t.done).length,
       totalCount: items.length,
       itemSeconds: totalSec,
-      workMinutes: sess?.minutes ?? 0,
+      workMinutes,
       workEndTs: sess?.lastTs ?? null,
       retro: s.retros.find(r => r.date === date) ?? null,
       topSong,

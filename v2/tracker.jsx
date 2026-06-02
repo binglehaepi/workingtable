@@ -23,6 +23,12 @@ const TICK_SEC = TICK_MS / 1000;
 let _pendingSec = 0;
 window.workActivity = {
   getPendingSec() { return _pendingSec; },
+  setPendingSec(sec) {
+    const n = Math.max(0, Math.min(59, Math.floor(Number(sec) || 0)));
+    _pendingSec = n;
+    window.dispatchEvent(new CustomEvent("work-pending-set", { detail: { sec: n } }));
+    window.dispatchEvent(new CustomEvent("work-tick"));
+  },
   subscribe(fn) {
     const h = () => fn(_pendingSec);
     window.addEventListener("work-tick", h);
@@ -45,6 +51,11 @@ window.workActivity = {
       const next = !!on;
       if (next === running) return;
       running = next;
+      const act = window.diary && window.diary.actions;
+      if (act) {
+        if (next) act.startWorkSessionLog();
+        else act.endWorkSessionLog();
+      }
       for (const fn of subs) fn(running);
     },
     toggle() { this.setRunning(!running); },
@@ -64,8 +75,17 @@ function ActivityTracker() {
       _pendingSec = 0;
       window.dispatchEvent(new CustomEvent("work-tick"));
     };
+    const onPendingSet = (e) => {
+      const sec = Math.max(0, Math.min(59, Math.floor(Number(e.detail?.sec) || 0)));
+      pendingSecRef.current = sec;
+      _pendingSec = sec;
+    };
     window.addEventListener("work-minutes-reset", onReset);
-    return () => window.removeEventListener("work-minutes-reset", onReset);
+    window.addEventListener("work-pending-set", onPendingSet);
+    return () => {
+      window.removeEventListener("work-minutes-reset", onReset);
+      window.removeEventListener("work-pending-set", onPendingSet);
+    };
   }, []);
 
   useEffect(() => {
@@ -89,6 +109,58 @@ function ActivityTracker() {
     return () => clearInterval(id);
   }, []);
 
+  return null;
+}
+
+// ---- 자동 일시정지 (유휴 / 창 비활성) ----
+function AutoPauseWatcher() {
+  const { state } = diary.useDiary();
+  const wt = diary.select.workTrackSettings(state);
+  const idleMin = wt.autoPauseIdleMin || 0;
+  const pauseOnBlur = !!wt.autoPauseOnBlur;
+
+  useEffect(() => {
+    if (!idleMin && !pauseOnBlur) return;
+    let lastActivity = Date.now();
+    const bump = () => { lastActivity = Date.now(); };
+    const events = ["mousemove", "mousedown", "keydown", "wheel", "touchstart", "scroll"];
+    events.forEach(ev => window.addEventListener(ev, bump, { passive: true }));
+
+    const onVis = () => {
+      if (pauseOnBlur && document.hidden && window.workTracker && window.workTracker.isRunning()) {
+        window.workTracker.setRunning(false);
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+
+    const id = setInterval(() => {
+      if (!idleMin || !(window.workTracker && window.workTracker.isRunning())) return;
+      if (Date.now() - lastActivity >= idleMin * 60000) {
+        window.workTracker.setRunning(false);
+      }
+    }, 5000);
+
+    return () => {
+      events.forEach(ev => window.removeEventListener(ev, bump));
+      document.removeEventListener("visibilitychange", onVis);
+      clearInterval(id);
+    };
+  }, [idleMin, pauseOnBlur]);
+
+  return null;
+}
+
+function WorkSessionBootstrap() {
+  const { actions } = diary.useDiary();
+  const bootedRef = useRef(false);
+  useEffect(() => {
+    if (bootedRef.current) return;
+    bootedRef.current = true;
+    actions.closeOrphanWorkSessionLogs();
+    if (window.workTracker && window.workTracker.isRunning()) {
+      actions.startWorkSessionLog();
+    }
+  }, [actions]);
   return null;
 }
 
@@ -293,5 +365,7 @@ const btn = {
 };
 
 window.ActivityTracker = ActivityTracker;
+window.AutoPauseWatcher = AutoPauseWatcher;
+window.WorkSessionBootstrap = WorkSessionBootstrap;
 window.RetroModal = RetroModal;
 window.openRetroModal = openRetroModal;

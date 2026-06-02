@@ -26,7 +26,7 @@ function SideDockV2({ tweaks, setTweak }) {
     return () => window.removeEventListener("todoary-open-memo", onOpenMemo);
   }, []);
   // 작업방 탭 표시 여부 (기본 꺼짐). 꺼지면 현재 활성 탭이 room 이었으면 todo 로 자동 전환.
-  const showRoomTab = tweaks?.showRoomTab ?? false;
+  const showRoomTab = tweaks?.showRoomTab ?? true;
   const visibleTabs = showRoomTab ? TABS : TABS.filter(t => t.id !== "room");
   React.useEffect(() => {
     if (!showRoomTab && active === "room") setActive("todo");
@@ -104,8 +104,8 @@ function SideDockV2({ tweaks, setTweak }) {
         zIndex: 2,
       }}>
         <AppNotifyToast />
-        {/* 글로시 스카이블루 헤더 — 드래그 영역 */}
-        <div data-tauri-drag-region style={{
+        {/* 글로시 스카이블루 헤더 — 드래그 영역 + 창 컨트롤 분리 (버튼은 drag 밖) */}
+        <div style={{
           height: 28,
           background: titlebarBg,
           color: "var(--ink)",
@@ -115,9 +115,14 @@ function SideDockV2({ tweaks, setTweak }) {
           borderBottom: "1.1px solid var(--ink)",
           userSelect: "none",
         }}>
-          <ProjectSwitcher />
-          <div data-tauri-drag-region style={{ flex: 1, alignSelf: "stretch" }} />
-          <CloseAppButton />
+          <div data-tauri-drag-region style={{
+            flex: 1, minWidth: 0, alignSelf: "stretch",
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <ProjectSwitcher />
+            <div data-tauri-drag-region style={{ flex: 1, alignSelf: "stretch" }} />
+          </div>
+          <TitlebarWindowControls setTweak={setTweak} />
         </div>
 
         {/* sticky — 헤더 (제목/음악/타이머/디데이 각 한 줄) */}
@@ -386,10 +391,61 @@ function DiaryTabs({ tabs, active, onSelect, dockSide, tabSide, dockWidth, tabSt
   );
 }
 
-// ---- 헤더 우측 종료 버튼 ----
-// Tauri 창에 OS 보더가 없어서 작업표시줄 외엔 종료 수단이 없던 문제 해결.
-function CloseAppButton() {
+// ---- 헤더 우측 창 컨트롤 (최소화 / 미니모드 / 종료) ----
+// Tauri 창에 OS 보더가 없어서 작업표시줄 외엔 창 조작 수단이 없던 문제 해결.
+function TitlebarIconButton({ onClick, title, ariaLabel, hoverStyle, children }) {
   const [hover, setHover] = useState(false);
+  const hs = hover && hoverStyle ? hoverStyle : {};
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title={title}
+      aria-label={ariaLabel}
+      style={{
+        all: "unset", cursor: "pointer", flexShrink: 0,
+        width: 20, height: 20, borderRadius: 4,
+        display: "grid", placeItems: "center",
+        fontSize: 13, lineHeight: 1,
+        color: hs.color ?? "var(--ink)",
+        background: hs.background ?? (hover ? "rgba(0,0,0,0.07)" : "transparent"),
+        border: hs.border ?? (hover ? "1px solid var(--ink-soft)" : "1px solid transparent"),
+        transition: "background 0.15s, color 0.15s, border 0.15s",
+      }}
+    >{children}</button>
+  );
+}
+
+function MiniModeIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 11 11" fill="none" aria-hidden="true">
+      <rect x="1.5" y="2.5" width="8" height="6.5" rx="1" stroke="currentColor" strokeWidth="1.2" />
+      <line x1="1.5" y1="4.5" x2="9.5" y2="4.5" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function TitlebarWindowControls({ setTweak }) {
+  const onMinimize = async (e) => {
+    e?.stopPropagation?.();
+    try {
+      const T = window.__TAURI__;
+      if (!T?.window?.getCurrentWindow) return;
+      await T.window.getCurrentWindow().minimize();
+    } catch (err) { console.warn("minimize failed:", err); }
+  };
+  const onMiniMode = async () => {
+    if (!setTweak) return;
+    try {
+      const pos = window.todoarySaveNormalWindowPos && await window.todoarySaveNormalWindowPos();
+      setTweak(pos
+        ? { dockHidden: true, appPosX: pos.x, appPosY: pos.y, appPosPhysical: true }
+        : { dockHidden: true });
+    } catch (_) {
+      setTweak("dockHidden", true);
+    }
+  };
   const onClose = async () => {
     try {
       const T = window.__TAURI__;
@@ -401,23 +457,30 @@ function CloseAppButton() {
     } catch (e) { console.warn("close failed:", e); }
   };
   return (
-    <button
-      onClick={onClose}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title={L("app.close")}
-      aria-label={L("app.close")}
-      style={{
-        all: "unset", cursor: "pointer", flexShrink: 0,
-        width: 20, height: 20, borderRadius: 4,
-        display: "grid", placeItems: "center",
-        fontSize: 13, lineHeight: 1, fontWeight: 700,
-        color: hover ? "#fff" : "var(--ink)",
-        background: hover ? "#e84545" : "transparent",
-        border: hover ? "1px solid #b03030" : "1px solid transparent",
-        transition: "background 0.15s, color 0.15s, border 0.15s",
-      }}
-    >×</button>
+    <div className="titlebar-window-controls" style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+      <TitlebarIconButton
+        onClick={onMinimize}
+        title={L("app.minimize")}
+        ariaLabel={L("app.minimize")}
+      >
+        <span style={{ fontSize: 15, fontWeight: 700, lineHeight: 1, marginTop: 4 }}>_</span>
+      </TitlebarIconButton>
+      <TitlebarIconButton
+        onClick={onMiniMode}
+        title={L("app.miniMode")}
+        ariaLabel={L("app.miniMode")}
+      >
+        <MiniModeIcon />
+      </TitlebarIconButton>
+      <TitlebarIconButton
+        onClick={onClose}
+        title={L("app.close")}
+        ariaLabel={L("app.close")}
+        hoverStyle={{ color: "#fff", background: "#e84545", border: "1px solid #b03030" }}
+      >
+        <span style={{ fontWeight: 700 }}>×</span>
+      </TitlebarIconButton>
+    </div>
   );
 }
 
@@ -425,13 +488,6 @@ function CloseAppButton() {
 // Tauri 창 자체를 위젯 크기로 줄여서 데스크탑 위 어디든 갈 수 있음.
 // 위젯은 창 전체를 채우고, 외곽(time row)에 data-tauri-drag-region 을 걸어 OS 레벨로 창을 끔.
 function DockRevealEdge({ tweaks, setTweak, onReveal }) {
-  const { state } = diary.useDiary();
-  const minutes = diary.select.workMinutesToday(state);
-  const hh = Math.floor(minutes / 60);
-  const mm = minutes % 60;
-  const pad = (n) => String(n).padStart(2, "0");
-  const timeDisplay = `${pad(hh)}:${pad(mm)}`;
-
   // 음악 상태 구독
   const [music, setMusic] = useState(
     () => window.musicPlayer ? { ...window.musicPlayer.getState() } : { playing: false, hasQueue: false }
@@ -462,8 +518,12 @@ function DockRevealEdge({ tweaks, setTweak, onReveal }) {
     border: "1px solid var(--ink-soft)",
   };
   const disabledBtn = { ...iconBtn, cursor: "default", opacity: 0.35 };
-  const WIDGET_W = 140;
-  const WIDGET_H = 78;
+  const miniSize = (window.TODOARY_DOCK_MINI && window.TODOARY_DOCK_MINI.getSize)
+    ? window.TODOARY_DOCK_MINI.getSize()
+    : { w: 148, h: 78 };
+  const WIDGET_W = miniSize.w;
+  const WIDGET_H = miniSize.h;
+  const WorkChip = window.WorkTimeUI && window.WorkTimeUI.WorkTimeChip;
 
   return (
     <div title={L("set.dockMiniTip")} style={{
@@ -473,20 +533,24 @@ function DockRevealEdge({ tweaks, setTweak, onReveal }) {
       border: "1.1px solid var(--ink)", borderRadius: 10, boxSizing: "border-box",
       boxShadow: "inset 0 1px 2px rgba(255,255,255,0.35), inset 0 -1px 1px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.18)",
       display: "flex", flexDirection: "column",
-      userSelect: "none", overflow: "hidden",
+      userSelect: "none", overflow: "visible",
       color: "var(--ink)", fontFamily: "var(--mono)",
       textShadow: "0 1px 0 rgba(255,255,255,0.55)",
       zIndex: 9999,
     }}>
-      <div style={{ flex: 1, position: "relative", minHeight: 0 }}>
+      <div style={{ flex: 1, position: "relative", minHeight: 0, overflow: "visible" }}>
         <div data-tauri-drag-region style={{ position: "absolute", inset: 0, cursor: "grab" }} />
         <div style={{
           position: "absolute", inset: 0,
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
           pointerEvents: "none",
         }}>
           <span style={{ fontSize: 12, opacity: 0.65, textShadow: "none" }}>⏱</span>
-          <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: "0.04em", lineHeight: 1 }}>{timeDisplay}</span>
+          {WorkChip ? (
+            <div style={{ pointerEvents: "auto", position: "relative", zIndex: 2 }}>
+              <WorkChip compact showStatus={false} />
+            </div>
+          ) : null}
         </div>
         <button onClick={onReveal} title={L("set.dockReveal")} aria-label={L("set.dockReveal")}
           style={{
@@ -679,19 +743,32 @@ function SettingsView({ tweaks, setTweak }) {
       </SetSection>
 
       <SetSection label={L("set.roomTab")}>
-        <SetSeg value={(t.showRoomTab ?? false) ? "on" : "off"} onChange={v => set("showRoomTab", v === "on")}
+        <SetSeg value={(t.showRoomTab ?? true) ? "on" : "off"} onChange={v => set("showRoomTab", v === "on")}
           options={[["on", L("set.on")], ["off", L("set.off")]]} />
         <div className="sk-cap" style={{ marginTop: 6, fontSize: 11 }}>{L("set.roomTabHint")}</div>
       </SetSection>
 
       <SetSection label={L("set.pomodoro")}>
-        <SetSeg value={(t.showPomodoro ?? false) ? "on" : "off"} onChange={v => set("showPomodoro", v === "on")}
+        <SetSeg value={(t.showPomodoro ?? true) ? "on" : "off"} onChange={v => set("showPomodoro", v === "on")}
           options={[["on", L("set.on")], ["off", L("set.off")]]} />
         <div className="sk-cap" style={{ marginTop: 6, fontSize: 11 }}>{L("set.pomodoroHint")}</div>
       </SetSection>
 
       <SetSection label={L("set.dockHide")}>
-        <SetSeg value={t.dockHidden ? "on" : "off"} onChange={v => set("dockHidden", v === "on")}
+        <SetSeg value={t.dockHidden ? "on" : "off"} onChange={async v => {
+          if (v === "on") {
+            try {
+              const pos = window.todoarySaveNormalWindowPos && await window.todoarySaveNormalWindowPos();
+              set(pos
+                ? { dockHidden: true, appPosX: pos.x, appPosY: pos.y, appPosPhysical: true }
+                : { dockHidden: true });
+            } catch (_) {
+              set("dockHidden", true);
+            }
+          } else {
+            set("dockHidden", false);
+          }
+        }}
           options={[["on", L("set.on")], ["off", L("set.off")]]} />
         <div className="sk-cap" style={{ marginTop: 6, fontSize: 11 }}>{L("set.dockHideHint")}</div>
       </SetSection>
@@ -765,8 +842,10 @@ function DecorateView({ tweaks, setTweak }) {
   };
   useI18n();
   const myThemes = t.myThemes ?? [];
-  const saveMyTheme = () => {
-    const name = prompt(L("deco.saveName"), L("deco.myThemeName") + (myThemes.length + 1));
+  const saveMyTheme = async () => {
+    const name = window.dialog
+      ? await window.dialog.prompt(L("deco.saveName"), L("deco.myThemeName") + (myThemes.length + 1))
+      : prompt(L("deco.saveName"), L("deco.myThemeName") + (myThemes.length + 1));
     if (!name?.trim()) return;
     const cur = { name: name.trim(), type: bgType, angle: bgAngle, stops, chrome: t.chromeColor ?? "#a9cdf5", accent: t.tabAccent };
     set("myThemes", [...myThemes, cur]);

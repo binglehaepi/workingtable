@@ -1,4 +1,4 @@
-/* global React, diary */
+/* global React, diary, L */
 // ===========================================================
 // 주간탭 — 주간 조망(7칸 격자) ↔ 하루 상세 슬라이드 전환
 //   같은 창 안에서 가로 슬라이드. 모달/별창 없음.
@@ -725,25 +725,76 @@ function Notebook({
       />
 
       {/* 하단 — 작업 기록 · 음악 · 종료 시각 (얇은 바) */}
-      <WorkDayBar totalSec={totalSec} topSong={topSong} endClock={endClock} />
+      <WorkDayBar totalSec={totalSec} topSong={topSong} endClock={endClock} date={date} />
     </div>
   );
 }
 
-function WorkDayBar({ totalSec, topSong, endClock }) {
+function WorkDayBar({ totalSec, topSong, endClock, date }) {
+  const { state, actions } = diary.useDiary();
+  const [panelOpen, setPanelOpen] = useState(false);
+  const wrapRef = React.useRef(null);
+  const btnRef = React.useRef(null);
+  const [panelFixedStyle, setPanelFixedStyle] = React.useState(null);
+  const isToday = date === diary.today();
+  const minutes = diary.select.workMinutesForDate(state, date);
+  const pendingSec = isToday && window.workActivity ? window.workActivity.getPendingSec() : 0;
+  const running = !!(window.workTracker && window.workTracker.isRunning());
+  const Panel = window.WorkTimeUI && window.WorkTimeUI.WorkTimeSettingsPanel;
+
+  React.useEffect(() => {
+    if (!panelOpen) {
+      setPanelFixedStyle(null);
+      return;
+    }
+    const sync = () => {
+      const el = btnRef.current || wrapRef.current;
+      if (!el || !window.WorkTimeUI) return;
+      setPanelFixedStyle(window.WorkTimeUI.clampWorkTimePanelStyle(el, { placement: "above" }));
+    };
+    sync();
+    window.addEventListener("resize", sync);
+    window.addEventListener("scroll", sync, true);
+    return () => {
+      window.removeEventListener("resize", sync);
+      window.removeEventListener("scroll", sync, true);
+    };
+  }, [panelOpen]);
+
+  React.useEffect(() => {
+    if (!panelOpen) return;
+    const close = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setPanelOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [panelOpen]);
+
+  const toggleRunning = (on) => {
+    if (window.workTracker) window.workTracker.setRunning(!!on);
+  };
+
   return (
-    <div style={{
+    <div ref={wrapRef} style={{
       flexShrink: 0, padding: "5px 10px",
       background: "#eef2f7", borderTop: "1px solid #d8dee5",
       display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
       fontFamily: "var(--hand)", fontSize: 10.5, color: "#4a5568",
-      rowGap: 2,
+      rowGap: 2, position: "relative",
     }}>
       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
         <span>🕒</span>
         <span style={{ fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, color: "var(--ink)" }}>
           {fmtSecondsHMS(totalSec)}
         </span>
+        <button ref={btnRef} type="button" onClick={() => setPanelOpen(o => !o)} title={L("worktrack.settingsTip")} style={{
+          all: "unset", cursor: "pointer", marginLeft: 2,
+          width: 16, height: 16, borderRadius: 4,
+          display: "grid", placeItems: "center",
+          fontSize: 10, color: "var(--ink-2)",
+          background: panelOpen ? "rgba(255,255,255,0.8)" : "transparent",
+          border: panelOpen ? "1px solid var(--ink-soft)" : "1px solid transparent",
+        }}>⚙</button>
       </span>
       <span style={{ color: "#c5cdd8", flexShrink: 0 }}>·</span>
       <span style={{
@@ -769,6 +820,21 @@ function WorkDayBar({ totalSec, topSong, endClock }) {
           {endClock || "—"}
         </span>
       </span>
+      {panelOpen && Panel && panelFixedStyle && (
+        <Panel
+          editDate={date}
+          minutes={minutes}
+          pendingSec={pendingSec}
+          running={running}
+          onToggleRunning={toggleRunning}
+          onClose={() => setPanelOpen(false)}
+          actions={actions}
+          state={state}
+          showDatePicker={false}
+          showOptions={false}
+          panelStyle={panelFixedStyle}
+        />
+      )}
     </div>
   );
 }

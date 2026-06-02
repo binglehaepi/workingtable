@@ -65,6 +65,7 @@
   <script type="text/babel" src="tweaks-panel.jsx"></script>
   <script type="text/babel" src="v2/i18n.jsx"></script>
   <script type="text/babel" src="v2/store.jsx"></script>
+  <script type="text/babel" src="v2/work-time-ui.jsx"></script>
   <script type="text/babel" src="v2/ai.jsx"></script>
   <script type="text/babel" src="v2/views-shared.jsx"></script>
   <script type="text/babel" src="v2/music.jsx"></script>
@@ -78,7 +79,6 @@
   <script type="text/babel" src="v2/room-dev-sandbox.jsx"></script>
   <script type="text/babel" src="v2/firebase-bridge.jsx"></script>
   <script type="text/babel" src="v2/room-store.jsx"></script>
-  <script type="text/babel" src="v2/room-log.jsx"></script>
   <script type="text/babel" src="v2/view-room.jsx"></script>
   <script type="text/babel" src="v2/timer.jsx"></script>
   <script type="text/babel" src="v2/tracker.jsx"></script>
@@ -116,10 +116,14 @@
       "chromeGradient": true,
       "appSize": "normal",
       "appHeight": 0,
+      "appPosX": -1,
+      "appPosY": -1,
+      "appPosPhysical": true,
       "showFakeIde": true,
       "desktopMode": false,
       "alwaysOnTop": false,
-      "showPomodoro": false,
+      "showPomodoro": true,
+      "showRoomTab": true,
       "dockHidden": false,
       "tabsHidden": false
     }/*EDITMODE-END*/;
@@ -130,9 +134,90 @@
     if (runningInTauri) TWEAK_DEFAULTS.desktopMode = true;
     document.documentElement.setAttribute("data-desktop-mode", String(TWEAK_DEFAULTS.desktopMode));
 
+    // 창 위치는 Tauri PhysicalPosition(px) 그대로 저장 — logical÷scale 변환 오차로
+    // 오른쪽 끝에 붙는 클램프 버그를 피함.
+    const APP_POS_MIGRATION_KEY = "todoary.appPos.physical-v1";
+
+    async function todoaryReadWindowPos(win) {
+      const phys = await win.outerPosition();
+      return { x: Math.round(phys.x), y: Math.round(phys.y) };
+    }
+
+    function todoaryPosToTweak(pos) {
+      return { appPosX: pos.x, appPosY: pos.y, appPosPhysical: true };
+    }
+
+    async function todoaryClampPhysicalPos(win, x, y, logicalW, logicalH) {
+      if (!win.currentMonitor) return { x, y };
+      const mon = await win.currentMonitor();
+      if (!mon) return { x, y };
+      const scale = (win.scaleFactor ? await win.scaleFactor() : mon.scaleFactor) || 1;
+      const wPhys = Math.round(logicalW * scale);
+      const hPhys = Math.round(logicalH * scale);
+      const mx = (mon.workAreaPosition || mon.position).x;
+      const my = (mon.workAreaPosition || mon.position).y;
+      const mw = (mon.workArea || mon.size).width;
+      const mh = (mon.workArea || mon.size).height;
+      return {
+        x: Math.max(mx, Math.min(mx + Math.max(0, mw - wPhys), x)),
+        y: Math.max(my, Math.min(my + Math.max(0, mh - hPhys), y)),
+      };
+    }
+
+    async function todoaryApplyWindowPos(win, pos, logicalW, logicalH) {
+      const T = window.__TAURI__;
+      const PP = T && T.window && T.window.PhysicalPosition;
+      if (!PP || !pos) return;
+      const clamped = (logicalW && logicalH)
+        ? await todoaryClampPhysicalPos(win, pos.x, pos.y, logicalW, logicalH)
+        : pos;
+      await win.setPosition(new PP(clamped.x, clamped.y));
+    }
+
+    async function todoarySaveNormalWindowPos() {
+      try {
+        const T = window.__TAURI__;
+        if (!T || !T.window || !T.window.getCurrentWindow) return null;
+        const pos = await todoaryReadWindowPos(T.window.getCurrentWindow());
+        window.__TODOARY_SAVED_NORMAL_POS__ = pos;
+        return pos;
+      } catch (_) { return null; }
+    }
+    window.todoarySaveNormalWindowPos = todoarySaveNormalWindowPos;
+
+    function todoaryGetDockMiniSize() {
+      try {
+        if (window.TODOARY_DOCK_MINI && window.TODOARY_DOCK_MINI.getSize) {
+          return window.TODOARY_DOCK_MINI.getSize();
+        }
+      } catch (_) {}
+      return { w: 148, h: 78 };
+    }
+
+    function todoaryGetSavedNormalPos(t) {
+      const mem = window.__TODOARY_SAVED_NORMAL_POS__;
+      if (mem && Number.isFinite(mem.x) && Number.isFinite(mem.y)) return mem;
+      if (t && t.appPosPhysical && t.appPosX >= 0 && t.appPosY >= 0) {
+        return { x: t.appPosX, y: t.appPosY };
+      }
+      return null;
+    }
+
     function App() {
       useI18n(); // 언어 변경 시 전체 리렌더
       const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+      React.useEffect(() => {
+        try {
+          if (!localStorage.getItem(APP_POS_MIGRATION_KEY)) {
+            setTweak({ appPosX: -1, appPosY: -1, appPosPhysical: true });
+            localStorage.setItem(APP_POS_MIGRATION_KEY, "1");
+          }
+        } catch (_) {}
+      }, []);
+      React.useEffect(() => {
+        const saved = todoaryGetSavedNormalPos(t);
+        if (saved) window.__TODOARY_SAVED_NORMAL_POS__ = saved;
+      }, []);
       React.useEffect(() => {
         document.documentElement.setAttribute("data-desktop-mode", String(t.desktopMode));
       }, [t.desktopMode]);
@@ -147,64 +232,106 @@
       // 창 크기: 최초엔 마지막 길이 복원, 이후 프리셋 변경 시 그 높이로
       // dockHidden(미니화) 일 때는 다른 effect 가 처리하므로 여기선 건너뜀
       const sizedRef = React.useRef(false);
+      const dockTransitionRef = React.useRef(false);
       React.useEffect(() => {
-        if (t.dockHidden) return;
-        try {
-          const T = window.__TAURI__;
-          if (!T || !T.window || !T.window.getCurrentWindow) return;
-          const avail = window.screen.availHeight || 900;
-          const base = Math.max(520, Math.min(Math.round(avail * 0.92), avail - 20));
-          const preset = t.appSize === "compact" ? Math.round(base * 0.42)
-                       : t.appSize === "medium" ? Math.round(base * 0.7)
-                       : base;
-          // 최초 1회: 저장된 마지막 높이가 있으면 그걸로 복원
-          const h = (!sizedRef.current && t.appHeight > 0) ? Math.min(t.appHeight, avail - 10) : preset;
-          sizedRef.current = true;
-          T.window.getCurrentWindow().setSize(new T.window.LogicalSize(440, h));
-        } catch (_) {}
-      }, [t.appSize, t.dockHidden]);
+        if (t.dockHidden || dockTransitionRef.current) return;
+        (async () => {
+          try {
+            const T = window.__TAURI__;
+            if (!T || !T.window || !T.window.getCurrentWindow) return;
+            const win = T.window.getCurrentWindow();
+            const avail = window.screen.availHeight || 900;
+            const base = Math.max(520, Math.min(Math.round(avail * 0.92), avail - 20));
+            const preset = t.appSize === "compact" ? Math.round(base * 0.42)
+                         : t.appSize === "medium" ? Math.round(base * 0.7)
+                         : base;
+            const first = !sizedRef.current;
+            const h = (first && t.appHeight > 0) ? Math.min(t.appHeight, avail - 10) : preset;
+            sizedRef.current = true;
+            await win.setSize(new T.window.LogicalSize(440, h));
+            if (first) {
+              const saved = todoaryGetSavedNormalPos(t);
+              if (saved) await todoaryApplyWindowPos(win, saved, 440, h);
+            }
+          } catch (_) {}
+        })();
+      }, [t.appSize]);
+
+      // 일반 모드에서 창을 옮기면 마지막 위치를 계속 기억 (미니 복귀용)
+      React.useEffect(() => {
+        const T = window.__TAURI__;
+        if (!T || !T.window || !T.window.getCurrentWindow) return;
+        const win = T.window.getCurrentWindow();
+        let unlisten;
+        let moveTimer;
+        (async () => {
+          try {
+            if (!win.onMoved) return;
+            unlisten = await win.onMoved(({ payload }) => {
+              if (t.dockHidden || dockTransitionRef.current) return;
+              clearTimeout(moveTimer);
+              moveTimer = setTimeout(() => {
+                try {
+                  const pos = { x: Math.round(payload.x), y: Math.round(payload.y) };
+                  window.__TODOARY_SAVED_NORMAL_POS__ = pos;
+                  setTweak(todoaryPosToTweak(pos));
+                } catch (_) {}
+              }, 250);
+            });
+          } catch (_) {}
+        })();
+        return () => {
+          clearTimeout(moveTimer);
+          if (unlisten) unlisten();
+        };
+      }, [t.dockHidden]);
 
       // 도크 미니화 — Tauri 창 자체를 위젯 크기로 축소해서 데스크탑 위 자유 이동.
-      // dockHidden true → minSize 풀고 140×78 으로
-      // dockHidden false → 원래 minSize 로 복귀 + appSize 프리셋 크기로 복원
+      // dockHidden true → 위젯 크기(148/168×78)로 축소
+      // dockHidden false → 저장된 위치·크기로 복원
+      const prevDockHiddenRef = React.useRef(null);
       React.useEffect(() => {
         const T = window.__TAURI__;
         if (!T || !T.window || !T.window.getCurrentWindow) return;
         const win = T.window.getCurrentWindow();
         const LS = T.window.LogicalSize;
-        const LP = T.window.LogicalPosition;
+        const wasHidden = prevDockHiddenRef.current;
+        const isFirst = wasHidden === null;
+        const enteringMini = !isFirst && t.dockHidden && !wasHidden;
+        const exitingMini = !isFirst && !t.dockHidden && wasHidden;
+        prevDockHiddenRef.current = t.dockHidden;
+        dockTransitionRef.current = true;
         (async () => {
           try {
+            const mini = todoaryGetDockMiniSize();
             if (t.dockHidden) {
-              await win.setMinSize(new LS(100, 60));
-              await win.setSize(new LS(140, 78));
+              if (enteringMini && !window.__TODOARY_SAVED_NORMAL_POS__) {
+                try {
+                  const pos = await todoarySaveNormalWindowPos();
+                  if (pos) setTweak(todoaryPosToTweak(pos));
+                } catch (_) {}
+              }
+              await win.setMinSize(new LS(Math.max(120, mini.w - 24), Math.max(56, mini.h - 16)));
+              await win.setSize(new LS(mini.w, mini.h));
               if (win.setResizable) { try { await win.setResizable(false); } catch (_) {} }
             } else {
               if (win.setResizable) { try { await win.setResizable(true); } catch (_) {} }
               await win.setMinSize(new LS(380, 360));
               const avail = window.screen.availHeight || 900;
-              const availW = window.screen.availWidth || 1280;
               const base = Math.max(520, Math.min(Math.round(avail * 0.92), avail - 20));
               const preset = t.appSize === "compact" ? Math.round(base * 0.42)
                            : t.appSize === "medium" ? Math.round(base * 0.7)
                            : base;
               const h = t.appHeight > 0 ? Math.min(t.appHeight, avail - 10) : preset;
               const w = 440;
-              // 위치 클램프 — 사용자가 미니 상태에서 모서리로 끌어둔 경우 대비
-              try {
-                const scale = (win.scaleFactor ? await win.scaleFactor() : 1) || 1;
-                const phys = await win.outerPosition();
-                const px = phys.x / scale;
-                const py = phys.y / scale;
-                const nx = Math.max(0, Math.min(availW - w, px));
-                const ny = Math.max(0, Math.min(avail - h, py));
-                if (Math.abs(nx - px) > 1 || Math.abs(ny - py) > 1) {
-                  await win.setPosition(new LP(nx, ny));
-                }
-              } catch (_) {}
+              if (exitingMini) {
+                const saved = todoaryGetSavedNormalPos(t);
+                if (saved) await todoaryApplyWindowPos(win, saved, w, h);
+              }
               await win.setSize(new LS(w, h));
             }
           } catch (e) { console.warn("dockHidden window resize failed:", e); }
+          finally { dockTransitionRef.current = false; }
         })();
       }, [t.dockHidden]);
 
@@ -242,7 +369,10 @@
       return (
         <>
           <SideDockV2 tweaks={t} setTweak={setTweak} />
+          <DialogHost />
           <ActivityTracker />
+          <AutoPauseWatcher />
+          <WorkSessionBootstrap />
           <RoomSyncBridge />
           <RetroModal />
           <TweaksPanel title="Tweaks">

@@ -42,72 +42,11 @@ function Timer() {
   );
 }
 
-// ---- 작업 시간 — 00 H 00 M ----
-// 앱 실행 = 기본 ON (초록 점, "WORKING"). 점 클릭하면 STOP (검은 점, "STOPPED").
-// 호버하면 우측에 작은 ⟳ 버튼 — 클릭 시 오늘 작업 시간을 0으로 초기화.
+// ---- 작업 시간 — WorkTimeUI 공유 컴포넌트 사용 ----
 function WorkTime() {
-  const { state, actions } = diary.useDiary();
-  const min = diary.select.workMinutesToday(state);
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  const pad = (n) => String(n).padStart(2, "0");
-  const [hover, setHover] = useState(false);
-  const [running, setRunning] = useState(() => !!(window.workTracker && window.workTracker.isRunning()));
-  useEffect(() => {
-    if (!window.workTracker) return;
-    return window.workTracker.subscribe(setRunning);
-  }, []);
-  const toggleRunning = () => { if (window.workTracker) window.workTracker.toggle(); };
-  const resetWork = async () => {
-    const msg = L("worktrack.resetConfirm");
-    const ok = await (window.dialog
-      ? window.dialog.confirm(msg)
-      : Promise.resolve(window.confirm(msg)));
-    if (ok) actions.resetWorkMinutes();
-  };
-
-  const dotColor = running ? "#ff3b3b" : "#1f1f1f";
-  const label = running ? L("worktrack.runningOn") : L("worktrack.runningOff");
-
-  return (
-    <span
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{ display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "var(--mono)", fontWeight: 700, fontSize: 15, color: "var(--ink)" }}
-    >
-      <button onClick={toggleRunning} title={label} style={{
-        all: "unset", cursor: "pointer", flexShrink: 0,
-        width: 7, height: 7, borderRadius: "50%",
-        background: dotColor,
-        boxShadow: running ? "0 0 4px rgba(255,59,59,0.55)" : "none",
-        animation: running ? "wt-blink 1.1s ease-in-out infinite" : "none",
-        transition: "background .15s",
-      }} />
-      <span style={{ fontSize: 9.5, letterSpacing: 1, color: running ? "#b03030" : "var(--ink-2)" }}>
-        {running ? "WORKING" : "STOPPED"}
-      </span>
-      <span>{pad(h)}</span>
-      <span style={{ fontSize: 10, opacity: .6 }}>H</span>
-      <span>{pad(m)}</span>
-      <span style={{ fontSize: 10, opacity: .6 }}>M</span>
-      <button
-        onClick={resetWork}
-        title={L("worktrack.resetTip")}
-        aria-label={L("worktrack.resetTip")}
-        style={{
-          all: "unset", cursor: "pointer", flexShrink: 0,
-          marginLeft: 2,
-          width: 16, height: 16, borderRadius: "50%",
-          display: "grid", placeItems: "center",
-          fontSize: 11, fontWeight: 700, lineHeight: 1,
-          color: "var(--ink-2)",
-          opacity: hover ? 0.85 : 0,
-          pointerEvents: hover ? "auto" : "none",
-          transition: "opacity 0.15s",
-        }}
-      >⟳</button>
-    </span>
-  );
+  const UI = window.WorkTimeUI;
+  if (!UI) return null;
+  return <UI.WorkTimeChip />;
 }
 
 // ---- 디데이 ----
@@ -565,6 +504,414 @@ async function notifyUser(title, body) {
   if (!nativeOk) fireWebNotification(title, body);
 }
 
+// ---- 뽀모도로 알림음 (Web Audio — 플레이리스트와 완전 분리) ----
+let pomoAudioCtx = null;
+let pomoMasterGain = null;
+
+function getPomoAudioCtx() {
+  if (!pomoAudioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    pomoAudioCtx = new Ctx();
+    pomoMasterGain = pomoAudioCtx.createGain();
+    pomoMasterGain.gain.value = 0.7;
+    pomoMasterGain.connect(pomoAudioCtx.destination);
+  }
+  if (pomoAudioCtx.state === "suspended") pomoAudioCtx.resume().catch(() => {});
+  return pomoAudioCtx;
+}
+
+function applyPomoMasterVolume(timer) {
+  const ctx = getPomoAudioCtx();
+  if (!ctx || !pomoMasterGain) return;
+  const enabled = timer?.soundEnabled !== false;
+  const v = enabled ? Math.max(0, Math.min(1, (timer?.soundVolume ?? 70) / 100)) : 0;
+  pomoMasterGain.gain.setValueAtTime(v, ctx.currentTime);
+}
+
+function playPomoTone(freq, duration, peak, wave = "sine", delay = 0) {
+  const ctx = getPomoAudioCtx();
+  if (!ctx || !pomoMasterGain) return;
+  const t0 = ctx.currentTime + delay;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = wave;
+  osc.frequency.value = freq;
+  gain.gain.setValueAtTime(0, t0);
+  gain.gain.linearRampToValueAtTime(peak, t0 + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+  osc.connect(gain);
+  gain.connect(pomoMasterGain);
+  osc.start(t0);
+  osc.stop(t0 + duration + 0.05);
+}
+
+function playPomoSound(kind, timer) {
+  if (!timer?.soundEnabled) return;
+  applyPomoMasterVolume(timer);
+  const peak = 0.45;
+  const type = timer.soundType ?? "chime";
+  if (type === "chime") {
+    const notes = kind === "work" ? [523.25, 659.25, 783.99] : [783.99, 659.25, 523.25];
+    notes.forEach((f, i) => playPomoTone(f, 0.42, peak * (1 - i * 0.12), "sine", i * 0.16));
+  } else if (type === "bell") {
+    playPomoTone(kind === "work" ? 880 : 660, 0.75, peak, "triangle");
+    playPomoTone(kind === "work" ? 1108.73 : 880, 0.45, peak * 0.55, "triangle", 0.18);
+  } else {
+    playPomoTone(kind === "work" ? 440 : 330, 0.55, peak * 0.75, "sine");
+  }
+}
+
+const POMO_HOLD_MS = 1500;
+const POMO_REPEAT_MS = 75;
+
+const pomoStepBtnStyle = {
+  width: 24, height: 24, borderRadius: 6, padding: 0, margin: 0,
+  border: "1.1px solid var(--ink-soft)", background: "var(--paper)",
+  display: "grid", placeItems: "center", boxSizing: "border-box",
+  fontFamily: "var(--mono)", fontSize: 14, fontWeight: 700, color: "var(--ink)",
+  lineHeight: 1, cursor: "pointer", userSelect: "none", WebkitUserSelect: "none",
+};
+
+function PomoMinStepper({ value, onChange, min = 1, max = 90 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(value));
+  const inputRef = useRef(null);
+  const valueRef = useRef(value);
+  const holdTimerRef = useRef(null);
+  const repeatTimerRef = useRef(null);
+  const fastRef = useRef(false);
+  const stepDirRef = useRef(0);
+
+  valueRef.current = value;
+
+  useEffect(() => {
+    if (!editing) setDraft(String(value));
+  }, [value, editing]);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const clearHold = () => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (repeatTimerRef.current) {
+      clearInterval(repeatTimerRef.current);
+      repeatTimerRef.current = null;
+    }
+    stepDirRef.current = 0;
+    fastRef.current = false;
+  };
+
+  useEffect(() => () => clearHold(), []);
+
+  const applyStep = (dir) => {
+    const next = valueRef.current + dir;
+    if (next < min || next > max) {
+      clearHold();
+      return;
+    }
+    onChange(next);
+  };
+
+  const canStep = (dir) => dir < 0 ? valueRef.current > min : valueRef.current < max;
+
+  const endHold = () => {
+    const wasFast = fastRef.current;
+    const dir = stepDirRef.current;
+    clearHold();
+    if (dir && !wasFast && canStep(dir)) applyStep(dir);
+    window.removeEventListener("mouseup", endHold);
+    window.removeEventListener("touchend", endHold);
+    window.removeEventListener("touchcancel", endHold);
+  };
+
+  const startHold = (dir, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!canStep(dir)) return;
+    clearHold();
+    fastRef.current = false;
+    stepDirRef.current = dir;
+    holdTimerRef.current = setTimeout(() => {
+      fastRef.current = true;
+      applyStep(dir);
+      repeatTimerRef.current = setInterval(() => applyStep(dir), POMO_REPEAT_MS);
+    }, POMO_HOLD_MS);
+    window.addEventListener("mouseup", endHold);
+    window.addEventListener("touchend", endHold);
+    window.addEventListener("touchcancel", endHold);
+  };
+
+  const commitDraft = () => {
+    const n = parseInt(String(draft).trim(), 10);
+    if (Number.isFinite(n)) onChange(Math.max(min, Math.min(max, n)));
+    setEditing(false);
+  };
+
+  const cancelEdit = () => {
+    setDraft(String(value));
+    setEditing(false);
+  };
+
+  const atMin = value <= min;
+  const atMax = value >= max;
+  const offStyle = { opacity: 0.35, cursor: "default" };
+  const numBoxStyle = {
+    minWidth: 30, width: editing ? 40 : 30, textAlign: "center", fontSize: 13, fontWeight: 700,
+    padding: "2px 0", borderRadius: 6, boxSizing: "border-box",
+    background: "var(--paper-2)", border: "1px solid var(--paper-3)",
+    fontFamily: "var(--mono)", color: "var(--ink)",
+  };
+
+  return (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 3 }} onMouseDown={e => e.stopPropagation()}>
+      <button
+        type="button"
+        onMouseDown={e => startHold(-1, e)}
+        onTouchStart={e => startHold(-1, e)}
+        onMouseLeave={endHold}
+        disabled={atMin}
+        title={L("pomo.minHoldHint")}
+        style={{ ...pomoStepBtnStyle, ...(atMin ? offStyle : {}) }}
+      >−</button>
+      {editing ? (
+        <input
+          ref={inputRef}
+          type="number"
+          min={min}
+          max={max}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={commitDraft}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") { e.preventDefault(); commitDraft(); }
+            if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+          }}
+          onMouseDown={e => e.stopPropagation()}
+          aria-label={L("pomo.minInput")}
+          style={{ ...numBoxStyle, outline: "none", border: "1.1px solid var(--ink)" }}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+          title={L("pomo.minInputHint")}
+          aria-label={L("pomo.minInputHint")}
+          style={{
+            ...numBoxStyle, cursor: "pointer", border: "1px solid var(--paper-3)",
+          }}
+        >{value}</button>
+      )}
+      <button
+        type="button"
+        onMouseDown={e => startHold(1, e)}
+        onTouchStart={e => startHold(1, e)}
+        onMouseLeave={endHold}
+        disabled={atMax}
+        title={L("pomo.minHoldHint")}
+        style={{ ...pomoStepBtnStyle, ...(atMax ? offStyle : {}) }}
+      >+</button>
+    </div>
+  );
+}
+
+function PomoOnOff({ on, onClick }) {
+  return (
+    <div style={{
+      display: "inline-flex", borderRadius: 99,
+      border: "1.1px solid var(--ink)", overflow: "hidden", flexShrink: 0,
+    }}>
+      {[true, false].map((v, i) => (
+        <button
+          key={String(v)}
+          type="button"
+          onClick={() => onClick(v)}
+          style={{
+            all: "unset", cursor: "pointer",
+            padding: "3px 10px", minWidth: 36, textAlign: "center",
+            borderLeft: i ? "1.1px solid var(--ink)" : "none",
+            background: on === v ? "var(--mint)" : "var(--paper)",
+            fontFamily: "var(--hand)", fontSize: 11, fontWeight: on === v ? 700 : 400,
+            color: "var(--ink)", lineHeight: 1.2,
+          }}
+        >{v ? L("set.on") : L("set.off")}</button>
+      ))}
+    </div>
+  );
+}
+
+function PomoSeg({ value, onChange, options }) {
+  return (
+    <div style={{
+      display: "flex", borderRadius: 8,
+      border: "1.1px solid var(--ink)", overflow: "hidden",
+    }}>
+      {options.map(([v, lbl], i) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => onChange(v)}
+          style={{
+            all: "unset", cursor: "pointer", flex: 1,
+            padding: "5px 2px", textAlign: "center",
+            borderLeft: i ? "1.1px solid var(--ink)" : "none",
+            background: value === v ? "var(--hi)" : "var(--paper)",
+            fontFamily: "var(--hand)", fontSize: 11, fontWeight: value === v ? 700 : 400,
+            color: "var(--ink)", lineHeight: 1.2,
+          }}
+        >{lbl}</button>
+      ))}
+    </div>
+  );
+}
+
+function PomoSetSection({ title, children, hint }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div className="sk-label" style={{ fontSize: 10, marginBottom: 5, letterSpacing: "0.08em" }}>{title}</div>
+      <div style={{
+        borderRadius: 10,
+        border: "1.1px solid var(--ink-soft)",
+        background: "var(--paper)",
+        overflow: "hidden",
+      }}>{children}</div>
+      {hint && (
+        <div className="sk-cap" style={{ marginTop: 5, fontSize: 10, lineHeight: 1.35, color: "var(--ink-3)" }}>{hint}</div>
+      )}
+    </div>
+  );
+}
+
+function PomoSetRow({ label, children, last = false, block = false }) {
+  return (
+    <div style={{
+      padding: block ? "8px 10px" : "7px 10px",
+      borderBottom: last ? "none" : "1px solid var(--paper-3)",
+    }}>
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+        marginBottom: block ? 6 : 0,
+      }}>
+        <span style={{
+          fontFamily: "var(--hand)", fontSize: 12, fontWeight: 600,
+          color: "var(--ink)", flexShrink: 0,
+        }}>{label}</span>
+        {!block && children}
+      </div>
+      {block && children}
+    </div>
+  );
+}
+
+function PomoSettingsPanel({ timer, actions, onTestSound }) {
+  const idle = (timer.phase ?? "idle") === "idle";
+  const soundOn = timer.soundEnabled !== false;
+  const soundType = timer.soundType ?? "chime";
+  const vol = timer.soundVolume ?? 70;
+  const set = (patch) => actions.setPomoSettings(patch);
+
+  return (
+    <div className="pomo-settings" style={{
+      display: "flex", flexDirection: "column", gap: 0,
+      maxHeight: 268, overflowY: "auto", overflowX: "hidden",
+    }}>
+      <PomoSetSection
+        title={L("pomo.sectionTime")}
+        hint={!idle ? L("pomo.durationActiveHint") : null}
+      >
+        <PomoSetRow label={L("pomo.workMin")}>
+          <PomoMinStepper
+            value={timer.workMin ?? 25}
+            onChange={v => set({ workMin: v })}
+          />
+        </PomoSetRow>
+        <PomoSetRow label={L("pomo.breakMin")} last>
+          <PomoMinStepper
+            value={timer.breakMin ?? 5}
+            onChange={v => set({ breakMin: v })}
+          />
+        </PomoSetRow>
+      </PomoSetSection>
+
+      <PomoSetSection title={L("pomo.sectionSound")}>
+        <PomoSetRow label={L("pomo.sound")} last={!soundOn}>
+          <PomoOnOff on={soundOn} onClick={v => set({ soundEnabled: v })} />
+        </PomoSetRow>
+        {soundOn && (
+          <>
+            <PomoSetRow label={L("pomo.soundVolume")} block>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 12, flexShrink: 0, width: 16, textAlign: "center" }}>
+                  {vol <= 0 ? "🔇" : vol < 50 ? "🔉" : "🔊"}
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={vol}
+                  onChange={e => {
+                    const v = Number(e.target.value);
+                    set({ soundVolume: v });
+                    applyPomoMasterVolume({ ...timer, soundEnabled: true, soundVolume: v });
+                  }}
+                  aria-label={L("pomo.soundVolume")}
+                  style={{ flex: 1, minWidth: 0, accentColor: "var(--hi)", height: 18 }}
+                />
+                <span className="sk-mono" style={{ width: 22, textAlign: "right", fontSize: 10, flexShrink: 0 }}>
+                  {vol}
+                </span>
+              </div>
+            </PomoSetRow>
+            <PomoSetRow label={L("pomo.soundType")} block>
+              <PomoSeg
+                value={soundType}
+                onChange={v => set({ soundType: v })}
+                options={[
+                  ["chime", L("pomo.soundChime")],
+                  ["bell", L("pomo.soundBell")],
+                  ["soft", L("pomo.soundSoft")],
+                ]}
+              />
+            </PomoSetRow>
+            <div style={{ padding: "6px 10px 8px", borderTop: "1px solid var(--paper-3)" }}>
+              <button
+                type="button"
+                onClick={() => onTestSound("work")}
+                style={{
+                  all: "unset", cursor: "pointer", width: "100%", boxSizing: "border-box",
+                  textAlign: "center", padding: "5px 8px", borderRadius: 8,
+                  border: "1.1px solid var(--ink-soft)", background: "var(--paper-2)",
+                  fontFamily: "var(--hand)", fontSize: 11, fontWeight: 600, color: "var(--ink-2)",
+                }}
+              >{L("pomo.soundTest")}</button>
+            </div>
+          </>
+        )}
+      </PomoSetSection>
+
+      <PomoSetSection title={L("pomo.sectionNotify")} hint={L("pomo.notifyHint")}>
+        <PomoSetRow label={L("pomo.notifyLabel")} last>
+          <PomoOnOff
+            on={!!timer.notificationsGranted}
+            onClick={async (v) => {
+              if (v) await requestNotifyPermission(actions);
+              else actions.setNotificationsGranted(false);
+            }}
+          />
+        </PomoSetRow>
+      </PomoSetSection>
+    </div>
+  );
+}
+
 function getPomoRemaining(timer) {
   const lenMs = diary.pomoCycleMs(timer);
   if (!timer?.cycleStartedAt) return lenMs;
@@ -667,8 +1014,8 @@ function PomoAlertBox({ msg }) {
   );
 }
 
-const POMO_WIN_W = 196;
-const POMO_WIN_H = 240;
+const POMO_WIN_W = 228;
+const POMO_WIN_H = 320;
 const POMO_POS_LS = "todoary.pomoPopPos";
 
 function loadPomoPos() {
@@ -708,6 +1055,7 @@ function PomodoroBarButton({ inline = false } = {}) {
   const phase = timer.phase ?? "idle";
   const [, tick] = useState(0);
   const [open, setOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [popPos, setPopPos] = useState(() => loadPomoPos());
   const [alertKind, setAlertKind] = useState(null);
   const btnRef = useRef(null);
@@ -794,9 +1142,13 @@ function PomodoroBarButton({ inline = false } = {}) {
       if (getPomoRemaining(t) > 0) return;
       if (t.lastNotifiedAt) return;
       actions.markNotified();
+      const kind = t.phase === "work" ? "work" : "break";
       setOpen(true);
+      setSettingsOpen(false);
       setPopPos(p => p || clampPomoPos(anchorPomoPos(btnRef.current)));
-      setAlertKind(t.phase === "work" ? "work" : "break");
+      setAlertKind(kind);
+      playPomoSound(kind, t);
+      notifyUser(L("pomo.title"), kind === "work" ? L("pomo.notifyWork") : L("pomo.notifyBreak"));
     }, 250);
     return () => clearInterval(id);
   }, [actions]);
@@ -824,6 +1176,7 @@ function PomodoroBarButton({ inline = false } = {}) {
       const t = e.target;
       if (btnRef.current?.contains(t) || popRef.current?.contains(t)) return;
       setOpen(false);
+      setSettingsOpen(false);
     };
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
@@ -832,6 +1185,7 @@ function PomodoroBarButton({ inline = false } = {}) {
   const toggleOpen = () => {
     setOpen(o => {
       const next = !o;
+      if (!next) setSettingsOpen(false);
       if (next && !popPos) {
         const saved = loadPomoPos();
         if (saved) {
@@ -852,6 +1206,7 @@ function PomodoroBarButton({ inline = false } = {}) {
     }
     if (phase === "idle") {
       await ensurePomoNotify(actions);
+      getPomoAudioCtx();
       actions.startPomodoro();
       setOpen(true);
       if (!popPos) setPopPos(clampPomoPos(anchorPomoPos(btnRef.current)));
@@ -919,16 +1274,35 @@ function PomodoroBarButton({ inline = false } = {}) {
               fontFamily: "var(--hand)", fontSize: 12, fontWeight: 700,
               color: "var(--ink)", flex: 1, minWidth: 0,
               whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            }}>{alertKind ? "🔔 " : ""}{L("pomo.title")}</span>
+            }}>{alertKind ? "🔔 " : settingsOpen ? "⚙ " : ""}{L("pomo.title")}</span>
+            {!alertKind && (
+              <button
+                type="button"
+                className="xp-btn"
+                onClick={() => setSettingsOpen(v => !v)}
+                title={L("pomo.settings")}
+                aria-label={L("pomo.settings")}
+                style={{ fontSize: 11, lineHeight: 1, padding: "0 4px" }}
+              >⚙</button>
+            )}
             <button
               type="button"
               className="xp-btn close"
-              onClick={() => { if (!alertKind) setOpen(false); else dismissAlert(); }}
+              onClick={() => {
+                if (alertKind) dismissAlert();
+                else { setOpen(false); setSettingsOpen(false); }
+              }}
               title="×"
             >×</button>
           </div>
-          <div className="xp-body" style={{ padding: "10px 12px 12px" }}>
-            {alertMsg ? (
+          <div className="xp-body" style={{ padding: settingsOpen && !alertKind ? "8px 10px 10px" : "10px 12px 12px" }}>
+            {settingsOpen && !alertKind ? (
+              <PomoSettingsPanel
+                timer={timer}
+                actions={actions}
+                onTestSound={(kind) => playPomoSound(kind, timer)}
+              />
+            ) : alertMsg ? (
               <PomoAlertBox msg={alertMsg} />
             ) : (
               <PomoTimerFace
@@ -940,6 +1314,7 @@ function PomodoroBarButton({ inline = false } = {}) {
                 paused={!!timer.paused}
               />
             )}
+            {!settingsOpen && (
             <div style={{
               display: "flex", alignItems: "center", justifyContent: "center",
               gap: 10, marginTop: 10,
@@ -980,12 +1355,15 @@ function PomodoroBarButton({ inline = false } = {}) {
                 </>
               )}
             </div>
+            )}
+            {!settingsOpen && (
             <div className="sk-mono" style={{
               textAlign: "center", marginTop: 8, fontSize: 10, color: "var(--ink-3)",
             }}>
               {timer.workMin ?? 25}m / {timer.breakMin ?? 5}m
               {(timer.pomodoroCount ?? 0) > 0 && ` · ${timer.pomodoroCount}`}
             </div>
+            )}
           </div>
         </div>
       )}
@@ -1023,6 +1401,15 @@ if (!document.getElementById("pomo-alert-css")) {
     .pomo-dock-bounce {
       animation: pomo-dock-bounce 2.1s cubic-bezier(0.33, 0, 0.2, 1) infinite;
       box-shadow: 0 0 0 2.5px var(--pink), 0 8px 0 var(--paper-3) !important;
+    }
+    .pomo-settings {
+      scrollbar-width: thin;
+      scrollbar-color: var(--ink-soft) transparent;
+    }
+    .pomo-settings::-webkit-scrollbar { width: 4px; }
+    .pomo-settings::-webkit-scrollbar-thumb {
+      background: var(--ink-soft);
+      border-radius: 99px;
     }
   `;
   document.head.appendChild(s);
