@@ -236,6 +236,9 @@ function seed() {
       notificationsGranted: false,
       lastNotifiedAt: null,
       pomodoroCount: 0,
+      soundEnabled: true,
+      soundVolume: 70,
+      soundType: "chime",
     },
     workSessions: [],
     songPlays: {},
@@ -334,11 +337,15 @@ function load() {
       workMin: 25, breakMin: 5, lengthMin: 25, phase: "idle",
       enabled: true, cycleStartedAt: null, paused: false, pausedRemainingMs: null,
       notificationsGranted: false, lastNotifiedAt: null, pomodoroCount: 0,
+      soundEnabled: true, soundVolume: 70, soundType: "chime",
     };
     data.timer.workMin ??= 25;
     data.timer.breakMin ??= 5;
     data.timer.phase ??= (data.timer.cycleStartedAt ? "work" : "idle");
     data.timer.pomodoroCount ??= 0;
+    data.timer.soundEnabled ??= true;
+    data.timer.soundVolume ??= 70;
+    data.timer.soundType ??= "chime";
     if (data.timer.lengthMin == null) data.timer.lengthMin = data.timer.workMin;
     data.workSessions ??= [];
     // workSessions 레거시 마이그레이션 — projectId 없던 시절 기록은 null(미분류)로 표기.
@@ -474,6 +481,67 @@ function hasRecurrenceCompletionForDay(recurrenceId, day, todos, excludeId) {
     && td.done
     && completionDay(td) === day
     && !normalizedTodoPeriod(td));
+}
+function findRecurrenceTemplate(s, recId) {
+  return (s.todos ?? []).find((td) => td.recurrenceId === recId && normalizedTodoPeriod(td));
+}
+function mapInstanceSubToTemplateSub(instance, template, subId) {
+  const instSub = (instance.subTasks || []).find((st) => st.id === subId);
+  if (!instSub) return null;
+  const templateSubs = template.subTasks || [];
+  return templateSubs.find((st) => st.title === instSub.title)
+    || templateSubs[(instance.subTasks || []).findIndex((st) => st.id === subId)]
+    || null;
+}
+function resolveSubTaskToggleTarget(s, todoId, subId) {
+  const hit = s.todos.find((x) => x.id === todoId);
+  if (!hit) return null;
+  if (!hit.recurrenceId || normalizedTodoPeriod(hit)) {
+    return { todo: hit, todoId, subId };
+  }
+  const template = findRecurrenceTemplate(s, hit.recurrenceId);
+  if (!template || template.id === hit.id) {
+    return { todo: hit, todoId, subId };
+  }
+  const templateSub = mapInstanceSubToTemplateSub(hit, template, subId);
+  if (!templateSub) return { todo: template, todoId: template.id, subId };
+  return { todo: template, todoId: template.id, subId: templateSub.id };
+}
+function removeRecurrenceCompletionsForDay(s, recId, day, keepTemplateId) {
+  const filtered = s.todos.filter((td) => !(
+    td.recurrenceId === recId
+    && !normalizedTodoPeriod(td)
+    && completionDay(td) === day
+    && td.id !== keepTemplateId
+  ));
+  if (filtered.length === s.todos.length) return s;
+  return { ...s, todos: filtered };
+}
+function applySubTaskToggleResult(s, todo, todoId, subs, day, allDone) {
+  let t = { ...todo, subTasks: subs };
+  if (allDone && normalizedTodoPeriod(t) && recurrenceRuleForTodo(t, s.recurrences)) {
+    return completeRecurringTodo(s, t, day, subs);
+  }
+  if (allDone) {
+    return {
+      ...s,
+      todos: s.todos.map((x) => (x.id === todoId ? applyTodoDoneState(t, true, day) : x)),
+    };
+  }
+  let next = {
+    ...s,
+    todos: s.todos.map((x) => (x.id === todoId ? {
+      ...t,
+      done: false,
+      completedAt: null,
+      completedDay: null,
+    } : x)),
+  };
+  const rec = recurrenceRuleForTodo(t, s.recurrences);
+  if (rec && normalizedTodoPeriod(t)) {
+    next = removeRecurrenceCompletionsForDay(next, rec.id, day, t.id);
+  }
+  return next;
 }
 function resetTemplateSubTasks(subs) {
   return (subs || []).map((st) => ({ ...st, done: false, completedAt: null }));
@@ -765,74 +833,38 @@ const actions = {
   toggleSubTask(todoId, subId, opts = {}) {
     const day = opts.completionDay || today();
     setState(s => {
-      let t = s.todos.find(x => x.id === todoId);
-      if (!t) return s;
-      const subs = (t.subTasks || []).map((st) => (st.id === subId ? {
+      const target = resolveSubTaskToggleTarget(s, todoId, subId);
+      if (!target) return s;
+      const { todo, todoId: resolvedTodoId, subId: resolvedSubId } = target;
+      const subs = (todo.subTasks || []).map((st) => (st.id === resolvedSubId ? {
         ...st,
         done: !st.done,
         completedAt: !st.done ? completedAtNow() : null,
       } : st));
-      const hasSubs = subs.length > 0;
-      const allDone = hasSubs && subs.every((st) => st.done);
-      if (!hasSubs) {
-        return { ...s, todos: s.todos.map(x => x.id === todoId ? { ...x, subTasks: subs } : x) };
+      if (!subs.length) {
+        return { ...s, todos: s.todos.map(x => x.id === resolvedTodoId ? { ...x, subTasks: subs } : x) };
       }
-      t = { ...t, subTasks: subs };
-      if (allDone && normalizedTodoPeriod(t) && recurrenceRuleForTodo(t, s.recurrences)) {
-        return completeRecurringTodo(s, t, day, subs);
-      }
-      if (allDone) {
-        return {
-          ...s,
-          todos: s.todos.map(x => x.id === todoId ? applyTodoDoneState(t, true, day) : x),
-        };
-      }
-      return {
-        ...s,
-        todos: s.todos.map(x => x.id === todoId ? {
-          ...t,
-          done: false,
-          completedAt: null,
-          completedDay: null,
-        } : x),
-      };
+      const allDone = subs.every((st) => st.done);
+      return applySubTaskToggleResult(s, todo, resolvedTodoId, subs, day, allDone);
     });
   },
   setSubTaskDone(todoId, subId, done, opts = {}) {
     const nextDone = !!done;
     const day = opts.completionDay || today();
     setState(s => {
-      let t = s.todos.find(x => x.id === todoId);
-      if (!t) return s;
-      const subs = (t.subTasks || []).map((st) => (st.id === subId ? {
+      const target = resolveSubTaskToggleTarget(s, todoId, subId);
+      if (!target) return s;
+      const { todo, todoId: resolvedTodoId, subId: resolvedSubId } = target;
+      const subs = (todo.subTasks || []).map((st) => (st.id === resolvedSubId ? {
         ...st,
         done: nextDone,
         completedAt: nextDone ? (st.completedAt || completedAtNow()) : null,
       } : st));
-      const hasSubs = subs.length > 0;
-      const allDone = hasSubs && subs.every((st) => st.done);
-      if (!hasSubs) {
-        return { ...s, todos: s.todos.map(x => x.id === todoId ? { ...x, subTasks: subs } : x) };
+      if (!subs.length) {
+        return { ...s, todos: s.todos.map(x => x.id === resolvedTodoId ? { ...x, subTasks: subs } : x) };
       }
-      t = { ...t, subTasks: subs };
-      if (allDone && normalizedTodoPeriod(t) && recurrenceRuleForTodo(t, s.recurrences)) {
-        return completeRecurringTodo(s, t, day, subs);
-      }
-      if (allDone) {
-        return {
-          ...s,
-          todos: s.todos.map(x => x.id === todoId ? applyTodoDoneState(t, true, day) : x),
-        };
-      }
-      return {
-        ...s,
-        todos: s.todos.map(x => x.id === todoId ? {
-          ...t,
-          done: false,
-          completedAt: null,
-          completedDay: null,
-        } : x),
-      };
+      const allDone = subs.every((st) => st.done);
+      return applySubTaskToggleResult(s, todo, resolvedTodoId, subs, day, allDone);
     });
   },
   renameSubTask(todoId, subId, title) {
@@ -1497,6 +1529,9 @@ const actions = {
   },
   setNotificationsGranted(g) {
     setState(s => ({ ...s, timer: { ...s.timer, notificationsGranted: g } }));
+  },
+  setPomoSettings(patch) {
+    setState(s => ({ ...s, timer: { ...s.timer, ...patch } }));
   },
 
   // ----- 작업 시간 트래킹 (날짜 × 프로젝트) -----

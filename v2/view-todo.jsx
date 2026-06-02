@@ -574,6 +574,7 @@ function TodoMonthCalendar({ items, recById, selectedDate, onPick, actions, selI
   const [previewRecRule, setPreviewRecRule] = useState(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [confirmReturnPhase, setConfirmReturnPhase] = useState("period");
+  const scheduleSessionRef = React.useRef(null);
   const gridRef = React.useRef(null);
 
   const selPeriod = selectedTodo ? normalizedPeriod(selectedTodo) : null;
@@ -587,25 +588,30 @@ function TodoMonthCalendar({ items, recById, selectedDate, onPick, actions, selI
   }, [items, recById, schedulingActive, showRecPanel, previewRecRule, selId]);
 
   useEffect(() => {
-    if (schedulingActive) {
-      setPendingPeriod(null);
-      setPreviewRecRule(null);
-      setSavedFlash(false);
-      const hasSchedule = selectedTodo && normalizedPeriod(selectedTodo) && recRule;
-      if (hasSchedule) {
-        setSchedulingPhase("repeat");
-        setShowRecPanel(true);
-        setConfirmReturnPhase("repeat");
-      } else {
-        setSchedulingPhase("period");
-        setShowRecPanel(false);
-        setConfirmReturnPhase("period");
-      }
-    } else {
+    if (!schedulingActive) {
+      scheduleSessionRef.current = null;
       setPendingPeriod(null);
       setShowRecPanel(false);
       setPreviewRecRule(null);
       setSavedFlash(false);
+      return;
+    }
+    // selId 기준으로 세션당 한 번만 초기화 — 기간 저장(selectedTodo 변경) 후 confirm/repeat 단계가 period로 덮이지 않게
+    if (scheduleSessionRef.current === selId) return;
+    scheduleSessionRef.current = selId;
+
+    setPendingPeriod(null);
+    setPreviewRecRule(null);
+    setSavedFlash(false);
+    const hasSchedule = selectedTodo && normalizedPeriod(selectedTodo) && recRule;
+    if (hasSchedule) {
+      setSchedulingPhase("repeat");
+      setShowRecPanel(true);
+      setConfirmReturnPhase("repeat");
+    } else {
+      setSchedulingPhase("period");
+      setShowRecPanel(false);
+      setConfirmReturnPhase("period");
     }
   }, [schedulingActive, selId, selectedTodo, recRule]);
 
@@ -946,7 +952,7 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
   const showActions = !compact && hover;
   const showScheduleBtn = !compact && (hover || schedulingActive);
   const showDrag = !compact && !t.done;
-  const showHandle = !compact && hover && !t.done;
+  const showHandle = showDrag;
 
   const subs = t.subTasks || [];
   const subDone = subs.filter(s => s.done).length;
@@ -955,7 +961,11 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
   const stop = (e) => e.stopPropagation();
   const onRowClick = (e) => { e.stopPropagation(); if (onPick) onPick(t.id); };
 
-  const onDragStart = (e) => { e.dataTransfer.setData("text/todo-id", t.id); e.dataTransfer.effectAllowed = "move"; };
+  const onDragStart = (e) => {
+    e.dataTransfer.setData("text/todo-id", t.id);
+    e.dataTransfer.setData("text/plain", t.id);
+    e.dataTransfer.effectAllowed = "move";
+  };
   const onDragOver = (e) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -975,7 +985,7 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
   };
   const onDrop = (e) => {
     e.preventDefault(); e.stopPropagation();
-    const fromId = e.dataTransfer.getData("text/todo-id");
+    const fromId = e.dataTransfer.getData("text/todo-id") || e.dataTransfer.getData("text/plain");
     const mode = dropMode;
     setDropMode(null);
     if (!fromId || fromId === t.id) return;
@@ -1011,8 +1021,7 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
       onClick={onRowClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      draggable={showDrag}
-      onDragStart={onDragStart} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
+      onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
       className="tape"
       style={{
         ...lightTape(i, t.pinned),
@@ -1030,15 +1039,18 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        {/* 드래그 핸들 — Notion 패턴: 호버 시에만 왼쪽 가장자리에 ⋮⋮ */}
+        {/* 드래그 핸들 — macOS WKWebView 에서는 핸들에서만 dragStart 가 안정적 */}
         <span
+          draggable={showDrag}
+          onDragStart={(e) => { stop(e); onDragStart(e); }}
           title={showHandle ? L("todo.dragMove") : ""}
           style={{
             flexShrink: 0, width: 12,
             cursor: showHandle ? "grab" : "default",
             color: "var(--ink-3)", fontSize: 12, lineHeight: 1,
             userSelect: "none", textAlign: "center",
-            opacity: showHandle ? 0.5 : 0,
+            WebkitUserDrag: showDrag ? "element" : "auto",
+            opacity: showHandle ? (hover ? 0.55 : 0.28) : 0,
             transition: "opacity 0.12s",
           }}
         >{showHandle ? "⋮⋮" : ""}</span>
