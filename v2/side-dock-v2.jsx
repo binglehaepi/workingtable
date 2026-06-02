@@ -702,6 +702,12 @@ function SettingsView({ tweaks, setTweak }) {
         <div className="sk-cap" style={{ marginTop: 6, fontSize: 11 }}>{L("set.tabsAutoHideHint")}</div>
       </SetSection>
 
+      {typeof window.RoomDevSandboxPanel === "function" && (
+        <SetSection label="작업방 개발 테스트 (이 PC만)">
+          <RoomDevSandboxPanel />
+        </SetSection>
+      )}
+
       <SetSection label={L("set.data")}>
         <button onClick={() => diary.actions.hardReset()} style={{
           all: "unset", cursor: "pointer", display: "block", width: "100%", boxSizing: "border-box",
