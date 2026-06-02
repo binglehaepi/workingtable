@@ -430,6 +430,11 @@ html[data-desktop-mode="true"] .dock-body {
 [data-tauri-drag-region]:active {
   cursor: grabbing;
 }
+.titlebar-window-controls,
+.titlebar-window-controls button {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
 .xp-taskbar {
   background: var(--pink-soft);
   color: var(--ink);

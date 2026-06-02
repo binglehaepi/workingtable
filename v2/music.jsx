@@ -352,10 +352,27 @@
     }
   }
 
+  function queueSame(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i].videoId !== b[i].videoId) return false;
+    }
+    return true;
+  }
+
   window.musicPlayer = {
     setQueue(tracks) {
-      queue = (tracks || []).map(t => ({ videoId: t.videoId, title: t.title }));
+      const next = (tracks || []).map(t => ({ videoId: t.videoId, title: t.title }));
+      const unchanged = queueSame(queue, next);
+      queue = next;
       state.hasQueue = queue.length > 0;
+      if (unchanged) {
+        for (let i = 0; i < queue.length; i++) {
+          if (next[i].title) queue[i].title = next[i].title;
+        }
+        emit();
+        return;
+      }
       if (!queue.length) {
         state.title = "";
         state.videoId = null;
