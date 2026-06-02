@@ -4,13 +4,136 @@
 // ===========================================================
 const { useState, useRef, useEffect } = React;
 
+// macOS Tauri WKWebView 에서 window.alert/confirm/prompt 가 동작하지 않음 → 인앱 모달로 대체
+let _dialogPush = null;
+const _dialogPending = [];
+
+function _enqueueDialog(entry) {
+  return new Promise((resolve) => {
+    const item = { id: Date.now() + Math.random(), ...entry, resolve };
+    if (_dialogPush) _dialogPush(item);
+    else _dialogPending.push(item);
+  });
+}
+
+function DialogHost() {
+  const [stack, setStack] = useState([]);
+  const [input, setInput] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    _dialogPush = (item) => setStack((s) => [...s, item]);
+    if (_dialogPending.length) {
+      setStack((s) => [...s, ..._dialogPending.splice(0)]);
+    }
+    return () => { _dialogPush = null; };
+  }, []);
+
+  const top = stack[0];
+
+  useEffect(() => {
+    if (!top || top.kind !== "prompt") return;
+    setInput(top.defaultValue ?? "");
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  }, [top?.id, top?.kind, top?.defaultValue]);
+
+  if (!top) return null;
+
+  const close = (value) => {
+    top.resolve(value);
+    setStack((s) => s.slice(1));
+  };
+
+  const isPrompt = top.kind === "prompt";
+  const isConfirm = top.kind === "confirm";
+
+  const okLabel = typeof L === "function" ? L("todo.yes") : "OK";
+  const cancelLabel = typeof L === "function" ? L("todo.no") : "Cancel";
+
+  return (
+    <div
+      onClick={() => close(isPrompt ? null : isConfirm ? false : undefined)}
+      style={{
+        position: "fixed", inset: 0, zIndex: 10000,
+        background: "rgba(138, 106, 94, 0.35)",
+        backdropFilter: "blur(2px)",
+        display: "grid", placeItems: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="xp-window"
+        style={{ width: "min(360px, 92vw)", boxShadow: "0 8px 0 var(--paper-3), 0 12px 30px rgba(138,106,94,0.3)" }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") close(isPrompt ? null : isConfirm ? false : undefined);
+          if (e.key === "Enter" && isPrompt) { e.preventDefault(); close(input); }
+        }}
+      >
+        <div className="xp-titlebar">
+          <span className="ttl">todoary</span>
+        </div>
+        <div className="xp-body">
+          <div style={{ fontFamily: "var(--hand)", fontSize: 14, color: "var(--ink)", whiteSpace: "pre-wrap", marginBottom: isPrompt ? 10 : 14 }}>
+            {top.message}
+          </div>
+          {isPrompt && (
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              style={{
+                width: "100%", boxSizing: "border-box",
+                border: "1.1px solid var(--ink)", borderRadius: 6,
+                padding: "6px 8px", marginBottom: 12,
+                fontFamily: "var(--hand)", fontSize: 14, background: "white",
+              }}
+            />
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+            {(isConfirm || isPrompt) && (
+              <button
+                type="button"
+                onClick={() => close(isPrompt ? null : false)}
+                style={{
+                  all: "unset", cursor: "pointer",
+                  padding: "4px 14px", borderRadius: 99,
+                  border: "1.1px solid var(--ink)", background: "var(--paper)",
+                  fontFamily: "var(--hand)", fontSize: 13,
+                }}
+              >{cancelLabel}</button>
+            )}
+            <button
+              type="button"
+              onClick={() => close(isPrompt ? input : isConfirm ? true : undefined)}
+              style={{
+                all: "unset", cursor: "pointer",
+                padding: "4px 14px", borderRadius: 99,
+                border: "1.1px solid var(--ink)", background: "var(--point)",
+                fontFamily: "var(--hand)", fontSize: 13, fontWeight: 700,
+              }}
+            >{okLabel}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 if (typeof window !== "undefined") {
   const existingDialog = window.dialog || {};
   window.dialog = {
     ...existingDialog,
-    alert: existingDialog.alert || (async (message) => window.alert(message)),
-    confirm: existingDialog.confirm || (async (message) => window.confirm(message)),
-    prompt: existingDialog.prompt || (async (message, defaultValue = "") => window.prompt(message, defaultValue ?? "")),
+    alert: existingDialog.alert || ((message) => _enqueueDialog({ kind: "alert", message: String(message ?? "") })),
+    confirm: existingDialog.confirm || ((message) => _enqueueDialog({ kind: "confirm", message: String(message ?? "") })),
+    prompt: existingDialog.prompt || ((message, defaultValue = "") => _enqueueDialog({
+      kind: "prompt",
+      message: String(message ?? ""),
+      defaultValue: defaultValue ?? "",
+    })),
   };
 }
 
@@ -601,3 +724,4 @@ window.DelBtn = DelBtn;
 window.ToggleBadge = ToggleBadge;
 window.ProjectSwitcher = ProjectSwitcher;
 window.RepoButtons = RepoButtons;
+window.DialogHost = DialogHost;
