@@ -201,7 +201,7 @@ function calSnap(h) {
 }
 
 function TodoView({ tweaks } = {}) {
-  const showPomodoro = tweaks?.showPomodoro ?? false;
+  const showPomodoro = tweaks?.showPomodoro ?? true;
   const { state, actions } = diary.useDiary();
   const [selId, setSel] = useState(null);
   const [schedulingId, setSchedulingId] = useState(null);

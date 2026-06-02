@@ -160,6 +160,7 @@ const __TWEAKS_STYLE = `
 // Single source of truth for tweak values. setTweak persists via the host
 // (__edit_mode_set_keys → host rewrites the EDITMODE block on disk).
 const __TWEAKS_LS_KEY = 'todoary.tweaks';
+const __TWEAKS_FEATURES_MIGRATION_KEY = 'todoary.tweaks.features-v2';
 // 앱 이름 변경 전 키에서 한 번만 이관.
 try {
   const __TWEAKS_LS_KEY_LEGACY = 'vibe-diary.tweaks';
@@ -175,7 +176,14 @@ function useTweaks(defaults) {
   const [values, setValues] = React.useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(__TWEAKS_LS_KEY) || 'null');
-      if (saved && typeof saved === 'object') return { ...defaults, ...saved };
+      let merged = saved && typeof saved === 'object' ? { ...defaults, ...saved } : { ...defaults };
+      // 이번 업데이트: 뽀모도로·작업방 탭을 한 번 활성화 (이후 설정에서 끄면 유지)
+      if (!localStorage.getItem(__TWEAKS_FEATURES_MIGRATION_KEY)) {
+        merged = { ...merged, showPomodoro: true, showRoomTab: true };
+        localStorage.setItem(__TWEAKS_FEATURES_MIGRATION_KEY, '1');
+        localStorage.setItem(__TWEAKS_LS_KEY, JSON.stringify(merged));
+      }
+      return merged;
     } catch (e) { /* ignore */ }
     return defaults;
   });
