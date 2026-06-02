@@ -36,10 +36,90 @@ function periodLabel(t) {
   if (!p) return "";
   return p.start === p.end ? fmtMD(p.start) : `${fmtMD(p.start)}-${fmtMD(p.end)}`;
 }
+const SCHEDULE_ORANGE = "#e07a20";
+function collectTodoScheduleMarks(todo, recRule, allTodos, previewRule) {
+  const recurringPending = new Set();
+  const recurringDone = new Set();
+  const plainDue = new Set();
+  const plainDone = new Set();
+  const periodRange = new Set();
+  const p = normalizedPeriod(todo);
+  const rule = previewRule || recRule;
+
+  if (p) {
+    let d = p.start;
+    for (let i = 0; i < 370 && d <= p.end; i += 1) {
+      periodRange.add(d);
+      if (rule) {
+        if (!diary.dayMatchesRecurrence?.(d, rule)) {
+          d = addDaysIso(d, 1);
+          continue;
+        }
+        const completed = (allTodos || []).some((td) => td.recurrenceId === todo.recurrenceId
+          && td.id !== todo.id
+          && td.done
+          && diary.completionDay(td) === d
+          && !normalizedPeriod(td));
+        if (completed) recurringDone.add(d);
+        else recurringPending.add(d);
+      }
+      d = addDaysIso(d, 1);
+    }
+  } else if (todo.dueDate && !todo.done) {
+    plainDue.add(todo.dueDate);
+  }
+
+  if (todo.done) {
+    const cd = diary.completionDay(todo);
+    if (cd) {
+      if (todo.recurrenceId && !p) recurringDone.add(cd);
+      else plainDone.add(cd);
+    }
+  }
+
+  return { recurringPending, recurringDone, plainDue, plainDone, periodRange, isRecurring: !!(p && rule) };
+}
+function mergeCalendarMarks(items, recById, schedulingOverride) {
+  const merged = {
+    recurringPending: new Set(),
+    recurringDone: new Set(),
+  };
+  (items || []).forEach((todo) => {
+    const p = normalizedPeriod(todo);
+    const overrideRule = schedulingOverride?.todoId === todo.id ? schedulingOverride.previewRule : null;
+    const recRule = overrideRule ?? recById[todo.recurrenceId];
+
+    if (p && !todo.done && recRule) {
+      const m = collectTodoScheduleMarks(todo, recRule, items, null);
+      m.recurringPending.forEach((d) => merged.recurringPending.add(d));
+      m.recurringDone.forEach((d) => merged.recurringDone.add(d));
+    }
+
+    if (todo.done && todo.recurrenceId && !p) {
+      const cd = diary.completionDay(todo);
+      if (cd) merged.recurringDone.add(cd);
+    }
+  });
+  return merged;
+}
+function ScheduleRing({ filled }) {
+  return (
+    <span style={{
+      width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+      border: `1.5px solid ${SCHEDULE_ORANGE}`,
+      background: filled ? SCHEDULE_ORANGE : "transparent",
+      boxSizing: "border-box",
+    }} />
+  );
+}
 function addDaysIso(iso, days) {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  const yy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
 }
 function clonePlain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -124,6 +204,7 @@ function TodoView({ tweaks } = {}) {
   const showPomodoro = tweaks?.showPomodoro ?? false;
   const { state, actions } = diary.useDiary();
   const [selId, setSel] = useState(null);
+  const [schedulingId, setSchedulingId] = useState(null);
   const undoStackRef = React.useRef([]);
   const redoStackRef = React.useRef([]);
   const copiedTodoRef = React.useRef(null);
@@ -146,6 +227,25 @@ function TodoView({ tweaks } = {}) {
   };
   useEffect(() => { actions.generateRecurrences(); }, []);
 
+  const prevTodayRef = React.useRef(todayStr);
+  useEffect(() => {
+    const prev = prevTodayRef.current;
+    if (filterMode === "date" && selectedDate === prev && prev !== todayStr) {
+      setSelectedDate(todayStr);
+    }
+    prevTodayRef.current = todayStr;
+  }, [todayStr, filterMode, selectedDate]);
+
+  useEffect(() => {
+    if (filterMode !== "date") return;
+    if (selectedDate !== todayStr) return;
+    const id = setInterval(() => {
+      const now = diary.today();
+      if (now !== todayStr) setSelectedDate(now);
+    }, 60 * 1000);
+    return () => clearInterval(id);
+  }, [filterMode, selectedDate, todayStr]);
+
   const items = diary.select.todosForCurrent(state);
   const isToday = selectedDate === todayStr;
 
@@ -161,7 +261,8 @@ function TodoView({ tweaks } = {}) {
       const monthEnd = monthPrefix + "31";
       return p.start <= monthEnd && p.end >= monthStart;
     }
-    if (t.completedAt && inThisMonth(t.completedAt.slice(0, 10))) return true;
+    const compDay = diary.completionDay(t);
+    if (compDay && inThisMonth(compDay)) return true;
     if (!t.dueDate && !p && inThisMonth(t.createdAt)) return true;
     return false;
   };
@@ -187,23 +288,13 @@ function TodoView({ tweaks } = {}) {
     (state.recurrences ?? []).filter(r => r.projectId === state.currentProjectId).map(r => [r.id, r])
   );
 
-  // 월간 달력 점
-  const dueDates = new Set(items.filter(t => !t.done && t.dueDate).map(t => t.dueDate));
-  items.filter(t => !t.done).forEach(t => {
-    const p = normalizedPeriod(t);
-    if (!p) return;
-    let d = p.start;
-    for (let i = 0; i < 370 && d <= p.end; i += 1) {
-      dueDates.add(d);
-      d = addDaysIso(d, 1);
-    }
-  });
-  const doneDates = new Set(
-    items.filter(t => t.done).map(t => diary.completionDay(t)).filter(Boolean)
-  );
-
-  const onPick = (id) => setSel(s => (s === id ? null : id));
-  const clear = () => setSel(null);
+  const onPick = (id) => {
+    setSel(s => (s === id ? null : id));
+    if (schedulingId && schedulingId !== id) setSchedulingId(null);
+  };
+  const clear = () => { setSel(null); setSchedulingId(null); };
+  const startSchedule = (id) => { setSel(id); setSchedulingId(id); };
+  const endSchedule = () => { setSchedulingId(null); setSel(null); };
   const makeHistorySnapshot = React.useCallback(() => {
     const s = diary.getState();
     return {
@@ -268,6 +359,8 @@ function TodoView({ tweaks } = {}) {
   // 진행도 — 보이는 할 일 + 그들의 서브태스크 체크박스 전체 카운팅
   const progressTotal = list.reduce((s, t) => s + 1 + (t.subTasks?.length ?? 0), 0);
   const progressDone = list.reduce((s, t) => s + (t.done ? 1 : 0) + (t.subTasks?.filter(st => st.done).length ?? 0), 0);
+  const completionContextDay = filterMode === "date" ? selectedDate : todayStr;
+  const toggleOpts = () => ({ completionDay: completionContextDay });
 
   useEffect(() => {
     const selectedTodo = () => {
@@ -364,7 +457,8 @@ function TodoView({ tweaks } = {}) {
           </div>
           {list.map((t, i) => (
             <TodoRow key={t.id} t={t} actions={actions} recRule={recById[t.recurrenceId]} i={i}
-              selected={selId === t.id} onPick={onPick} />
+              selected={selId === t.id} onPick={onPick} completionDay={completionContextDay}
+              schedulingActive={schedulingId === t.id} onScheduleDate={startSchedule} />
           ))}
           {list.length === 0 && (
             <div className="sk-cap" style={{ padding: "4px 2px" }}>
@@ -381,13 +475,17 @@ function TodoView({ tweaks } = {}) {
       bottomScroll={false}
       bottom={
         <TodoMonthCalendar
-          dueDates={dueDates}
-          doneDates={doneDates}
+          items={items}
+          recById={recById}
           selectedDate={filterMode === "date" ? selectedDate : null}
           onPick={(d) => { setSelectedDate(d); setFilterMode("date"); }}
           actions={actions}
           selId={selId}
           selectedTodo={selId ? items.find(t => t.id === selId) : null}
+          recRule={selId ? recById[items.find(t => t.id === selId)?.recurrenceId] : null}
+          schedulingActive={!!schedulingId && schedulingId === selId}
+          onEndSchedule={endSchedule}
+          pushUndo={pushUndo}
         />
       }
     />
@@ -460,33 +558,71 @@ function TodoProgressBar({ done, total }) {
 }
 
 // ---- 컴팩트 월간 달력 (할 일 탭 아래) ----
-// 추가 인터랙션:
-// (1) 할 일이 선택된 상태에서 셀 위에 드래그 → 기간(startDate/endDate) 설정.
-// (2) 할 일 행을 잡아서 셀에 드롭 → 그 날짜로 dueDate 이동 (기간 클리어).
-function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions, selId, selectedTodo }) {
+// 1단계: 기간 드래그 → 2단계: 반복 설정 버튼 → 반복 패널
+function TodoMonthCalendar({ items, recById, selectedDate, onPick, actions, selId, selectedTodo, recRule, schedulingActive, onEndSchedule, pushUndo }) {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
   const todayStr = diary.today();
 
-  // 범위 드래그 상태 — selId 있는 동안만 활성
   const [downDate, setDownDate] = useState(null);
   const [hoverDate, setHoverDate] = useState(null);
-  // HTML5 drop 호버 (시각 피드백용)
   const [dropDate, setDropDate] = useState(null);
+  const [schedulingPhase, setSchedulingPhase] = useState("period");
+  const [pendingPeriod, setPendingPeriod] = useState(null);
+  const [showRecPanel, setShowRecPanel] = useState(false);
+  const [previewRecRule, setPreviewRecRule] = useState(null);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [confirmReturnPhase, setConfirmReturnPhase] = useState("period");
+  const gridRef = React.useRef(null);
 
-  // mouseup 윈도우 핸들러 — 범위 드래그 종료
+  const selPeriod = selectedTodo ? normalizedPeriod(selectedTodo) : null;
+  const showHint = schedulingActive;
+
+  const calendarMarks = React.useMemo(() => {
+    const override = (schedulingActive && showRecPanel && previewRecRule && selId)
+      ? { todoId: selId, previewRule: previewRecRule }
+      : null;
+    return mergeCalendarMarks(items, recById, override);
+  }, [items, recById, schedulingActive, showRecPanel, previewRecRule, selId]);
+
+  useEffect(() => {
+    if (schedulingActive) {
+      setPendingPeriod(null);
+      setPreviewRecRule(null);
+      setSavedFlash(false);
+      const hasSchedule = selectedTodo && normalizedPeriod(selectedTodo) && recRule;
+      if (hasSchedule) {
+        setSchedulingPhase("repeat");
+        setShowRecPanel(true);
+        setConfirmReturnPhase("repeat");
+      } else {
+        setSchedulingPhase("period");
+        setShowRecPanel(false);
+        setConfirmReturnPhase("period");
+      }
+    } else {
+      setPendingPeriod(null);
+      setShowRecPanel(false);
+      setPreviewRecRule(null);
+      setSavedFlash(false);
+    }
+  }, [schedulingActive, selId, selectedTodo, recRule]);
+
   useEffect(() => {
     if (!downDate) return;
     const onUp = () => {
-      const draggedAcross = hoverDate && hoverDate !== downDate;
-      if (draggedAcross && selId && actions) {
+      if (schedulingActive && selId && (schedulingPhase === "period" || schedulingPhase === "repeat")) {
         const lo = downDate < hoverDate ? downDate : hoverDate;
         const hi = downDate < hoverDate ? hoverDate : downDate;
-        actions.setTodoPeriod(selId, lo, hi);
-        actions.setTodoDue(selId, null);
-      } else {
-        // 단순 클릭이거나 selId 없이 드래그한 경우 → 평소처럼 날짜 필터
+        setConfirmReturnPhase(schedulingPhase);
+        setPendingPeriod({ lo, hi });
+        setSchedulingPhase("confirm");
+        if (schedulingPhase === "repeat") {
+          setShowRecPanel(false);
+          setPreviewRecRule(null);
+        }
+      } else if (!schedulingActive) {
         onPick(downDate);
       }
       setDownDate(null);
@@ -494,19 +630,48 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
     };
     window.addEventListener("mouseup", onUp);
     return () => window.removeEventListener("mouseup", onUp);
-  }, [downDate, hoverDate, selId, actions, onPick]);
+  }, [downDate, hoverDate, selId, onPick, schedulingActive, schedulingPhase]);
 
-  // 셀이 현재 드래그 중인 범위 안에 있는지 — selId 있을 때만 시각화 (그래야 의미 있음)
+  const confirmPeriod = () => {
+    if (!pendingPeriod || !selId || !actions) return;
+    pushUndo?.();
+    actions.setTodoPeriod(selId, pendingPeriod.lo, pendingPeriod.hi);
+    actions.setTodoDue(selId, null);
+    setPendingPeriod(null);
+    setSchedulingPhase("repeat");
+    setShowRecPanel(true);
+    setPreviewRecRule(null);
+  };
+
+  const cancelPeriod = () => {
+    setPendingPeriod(null);
+    setPreviewRecRule(null);
+    if (confirmReturnPhase === "repeat") {
+      setSchedulingPhase("repeat");
+      setShowRecPanel(true);
+    } else {
+      setSchedulingPhase("period");
+      setShowRecPanel(false);
+    }
+  };
+
+  const canDragPeriod = schedulingActive && (schedulingPhase === "period" || schedulingPhase === "repeat");
+
   const inRangeDrag = (d) => {
-    if (!selId || !downDate || !hoverDate) return false;
+    if (schedulingPhase === "confirm" && pendingPeriod) {
+      return pendingPeriod.lo <= d && d <= pendingPeriod.hi;
+    }
+    if (!canDragPeriod || !downDate || !hoverDate) return false;
     const lo = downDate < hoverDate ? downDate : hoverDate;
     const hi = downDate < hoverDate ? hoverDate : downDate;
     return lo <= d && d <= hi;
   };
 
-  // 선택된 할 일의 기존 기간 — 시각적으로 미리 깔아둠 (드래그 안 하는 평소에도)
-  const selPeriod = selectedTodo ? normalizedPeriod(selectedTodo) : null;
-  const inSelPeriod = (d) => !!selPeriod && selPeriod.start <= d && d <= selPeriod.end;
+  const inRepeatPreview = (d) => {
+    if (schedulingPhase !== "repeat" || !showRecPanel || !previewRecRule || !selPeriod) return false;
+    if (d < selPeriod.start || d > selPeriod.end) return false;
+    return diary.dayMatchesRecurrence?.(d, previewRecRule);
+  };
 
   const startDow = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -516,6 +681,18 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
   while (cells.length % 7 !== 0) cells.push(null);
   const rows = cells.length / 7;
   const dows = (window.i18n && window.i18n.weekdays) ? window.i18n.weekdays() : ["일","월","화","수","목","금","토"];
+
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      if (el.scrollHeight <= el.clientHeight + 1) return;
+      el.scrollTop += e.deltaY;
+      e.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [rows, schedulingActive, month, year]);
 
   const prev = () => { if (month === 0) { setYear(y => y - 1); setMonth(11); } else setMonth(m => m - 1); };
   const next = () => { if (month === 11) { setYear(y => y + 1); setMonth(0); } else setMonth(m => m + 1); };
@@ -528,16 +705,33 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
     return `${year}年 ${month + 1}月`;
   })();
 
+  const hintText = savedFlash
+    ? L("todo.scheduleSaved")
+    : schedulingPhase === "period"
+      ? L("todo.dragPeriodHint")
+      : schedulingPhase === "repeat"
+        ? L("todo.setRepeatHint")
+        : "";
+
+  const pendingRangeLabel = pendingPeriod
+    ? (pendingPeriod.lo === pendingPeriod.hi ? fmtMD(pendingPeriod.lo) : `${fmtMD(pendingPeriod.lo)}-${fmtMD(pendingPeriod.hi)}`)
+    : "";
+
   return (
     <div style={{
       height: "100%", minHeight: 0, display: "flex", flexDirection: "column",
-      border: "1.1px solid var(--ink)", borderRadius: 10, overflow: "hidden", background: "white",
+      border: schedulingActive ? "2px solid var(--point)" : "1.1px solid var(--ink)",
+      borderRadius: 10, overflow: "hidden", background: "white",
+      boxShadow: schedulingActive ? "0 0 0 3px color-mix(in srgb, var(--point) 28%, transparent)" : "none",
+      transition: "border-color 0.15s, box-shadow 0.15s",
     }}>
       {/* 헤더 */}
       <div style={{
         flexShrink: 0, display: "flex", alignItems: "center", gap: 4,
         padding: "4px 8px",
-        background: "linear-gradient(180deg, color-mix(in srgb, var(--chrome,#a9cdf5) 42%, white), color-mix(in srgb, var(--chrome,#a9cdf5) 12%, white))",
+        background: schedulingActive
+          ? "linear-gradient(180deg, color-mix(in srgb, var(--point) 55%, white), color-mix(in srgb, var(--point) 18%, white))"
+          : "linear-gradient(180deg, color-mix(in srgb, var(--chrome,#a9cdf5) 42%, white), color-mix(in srgb, var(--chrome,#a9cdf5) 12%, white))",
         borderBottom: "1.1px solid var(--ink)",
       }}>
         <button onClick={prev} style={navBtn}>◀</button>
@@ -547,7 +741,33 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
           cursor: "pointer",
         }} onClick={goToday}>{ymLabel}</div>
         <button onClick={next} style={navBtn}>▶</button>
+        {schedulingActive && (
+          <button onClick={onEndSchedule} title={L("todo.close")} style={{ ...navBtn, width: "auto", padding: "0 6px", fontSize: 11 }}>✕</button>
+        )}
       </div>
+      {showHint && schedulingPhase !== "confirm" && (
+        <div style={{
+          flexShrink: 0, padding: "5px 10px",
+          fontFamily: "var(--hand)", fontSize: 12,
+          color: savedFlash ? "#2f7d44" : "var(--ink)",
+          background: savedFlash
+            ? "color-mix(in srgb, #52c759 18%, white)"
+            : "color-mix(in srgb, var(--point) 12%, white)",
+          borderBottom: "1px dashed rgba(40,51,63,.22)",
+        }}>
+          {hintText}
+          {!savedFlash && selectedTodo?.title && schedulingPhase !== "confirm" && (
+            <span style={{ color: "var(--ink-2)", marginLeft: 6 }}>· {selectedTodo.title}</span>
+          )}
+        </div>
+      )}
+      {schedulingActive && schedulingPhase === "confirm" && pendingPeriod && (
+        <PeriodConfirmBar
+          rangeLabel={pendingRangeLabel}
+          onYes={confirmPeriod}
+          onNo={cancelPeriod}
+        />
+      )}
       {/* 요일 */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", flexShrink: 0, background: "#f7f9fc" }}>
         {dows.map((w, i) => (
@@ -559,7 +779,9 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
         ))}
       </div>
       {/* 날짜 그리드 — 셀 최소 높이 보장 + 부족하면 스크롤. 스크롤은 주 단위로 스냅. */}
-      <div style={{
+      <div
+        ref={gridRef}
+        style={{
         flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden",
         display: "grid",
         gridTemplateColumns: "repeat(7,1fr)",
@@ -572,28 +794,31 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
           const ds = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
           const isToday = ds === todayStr;
           const isSelected = ds === selectedDate;
-          const hasDue = dueDates.has(ds);
-          const hasDone = doneDates.has(ds);
-          const isInRange = inRangeDrag(ds);
-          const isInSelPeriod = !isInRange && inSelPeriod(ds);
           const isDropHover = dropDate === ds;
+          const recDone = calendarMarks.recurringDone.has(ds) && !calendarMarks.recurringPending.has(ds);
+          const recPending = calendarMarks.recurringPending.has(ds);
+          const isDragRange = inRangeDrag(ds);
+          const isRepeatDay = inRepeatPreview(ds);
 
-          // 배경 — 드롭 호버 > 드래그 범위 > 선택 셀 > 선택 할 일의 기간 표시
           let cellBg = "transparent";
           if (isDropHover) cellBg = "var(--hi)";
-          else if (isInRange) cellBg = "var(--hi-soft)";
+          else if (isDragRange) cellBg = "rgba(224, 122, 32, 0.28)";
+          else if (isRepeatDay) cellBg = "rgba(224, 122, 32, 0.14)";
           else if (isSelected) cellBg = "var(--hi-soft)";
-          else if (isInSelPeriod) cellBg = "rgba(168, 196, 232, 0.22)";
 
           return (
             <div
               key={i}
               onMouseDown={(e) => {
                 if (e.button !== 0) return;
-                setDownDate(ds);
-                setHoverDate(ds);
+                if (canDragPeriod) {
+                  setDownDate(ds);
+                  setHoverDate(ds);
+                } else {
+                  onPick(ds);
+                }
               }}
-              onMouseEnter={() => { if (downDate) setHoverDate(ds); }}
+              onMouseEnter={() => { if (canDragPeriod && downDate) setHoverDate(ds); }}
               onDragOver={(e) => {
                 if (!actions) return;
                 e.preventDefault();
@@ -609,12 +834,12 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
                 if (id && actions) actions.moveTodoToDate(id, ds);
               }}
               style={{
-                cursor: "pointer", position: "relative",
+                cursor: canDragPeriod ? "crosshair" : "pointer", position: "relative",
                 display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1,
                 borderTop: "1px solid #eef0f3",
                 borderLeft: i % 7 === 0 ? "none" : "1px solid #eef0f3",
                 background: cellBg,
-                boxShadow: isSelected && !isInRange && !isDropHover ? "inset 0 0 0 1.5px var(--ink)" : "none",
+                boxShadow: isSelected && !isDragRange && !isDropHover ? "inset 0 0 0 1.5px var(--ink)" : "none",
                 userSelect: "none",
                 scrollSnapAlign: "start",
               }}>
@@ -625,14 +850,42 @@ function TodoMonthCalendar({ dueDates, doneDates, selectedDate, onPick, actions,
                 color: "var(--ink)",
                 pointerEvents: "none",
               }}>{d}</span>
-              <span style={{ display: "inline-flex", gap: 2, height: 4, pointerEvents: "none" }}>
-                {hasDue && <span style={{ width: 4, height: 4, borderRadius: "50%", background: "#e06a7a" }} />}
-                {hasDone && <span style={{ width: 4, height: 4, borderRadius: "50%", background: "#9aa7b8" }} />}
+              <span style={{ display: "inline-flex", gap: 2, height: 8, alignItems: "center", pointerEvents: "none" }}>
+                {recPending && <ScheduleRing filled={false} />}
+                {recDone && <ScheduleRing filled={true} />}
               </span>
             </div>
           );
         })}
       </div>
+      {schedulingActive && schedulingPhase === "repeat" && showRecPanel && selectedTodo && (
+        <RecurrencePanel
+          key={`${selectedTodo.id}-${recRule?.id || "n"}-${recRule?.frequency || "daily"}`}
+          t={selectedTodo}
+          recRule={recRule}
+          actions={actions}
+          onPreviewChange={setPreviewRecRule}
+          onClose={() => { setShowRecPanel(false); setPreviewRecRule(null); setSchedulingPhase("period"); }}
+          onApply={() => {
+            setShowRecPanel(false);
+            setPreviewRecRule(null);
+            setSavedFlash(true);
+            window.setTimeout(() => {
+              setSavedFlash(false);
+              onEndSchedule?.();
+            }, 1200);
+          }}
+          onClearSchedule={() => {
+            pushUndo?.();
+            actions.clearTodoSchedule(selectedTodo.id);
+            setPendingPeriod(null);
+            setSchedulingPhase("period");
+            setShowRecPanel(false);
+            setPreviewRecRule(null);
+            onEndSchedule?.();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -645,14 +898,34 @@ const navBtn = {
   background: "rgba(255,255,255,0.6)", border: "1px solid var(--ink-soft)",
 };
 
+function PeriodConfirmBar({ rangeLabel, onYes, onNo }) {
+  const stop = (e) => e.stopPropagation();
+  return (
+    <div style={{
+      flexShrink: 0, padding: "8px 10px",
+      borderBottom: "1.1px solid var(--ink)",
+      background: "color-mix(in srgb, var(--point) 10%, white)",
+      display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+    }}>
+      <span style={{ fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink)", flex: 1, minWidth: 0 }}>
+        {L("todo.periodConfirm", { range: rangeLabel })}
+      </span>
+      <button type="button" onMouseDown={stop} onMouseUp={stop} onClick={(e) => { stop(e); onYes(); }} style={{ ...miniBtn, background: "var(--point)", padding: "2px 12px" }}>
+        {L("todo.yes")}
+      </button>
+      <button type="button" onMouseDown={stop} onMouseUp={stop} onClick={(e) => { stop(e); onNo(); }} style={miniBtn}>{L("todo.no")}</button>
+    </div>
+  );
+}
+
 // ---- 할 일 행 ----
 // • selected: 그 행만 액션 아이콘 / 외곽선 / 드래그 활성
 // • compact:  중요·예정 트레이용 (드래그 없음)
 // • t.done:   취소선 + 회색
 // • subTasks: 접히는 하위 목록 + 진행도 (n/m) 뱃지
-function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false, onPick }) {
-  const [recOpen, setRecOpen] = useState(false);
-  const [dueOpen, setDueOpen] = useState(false);
+function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false, onPick, completionDay, schedulingActive = false, onScheduleDate }) {
+  const markDay = completionDay || diary.today();
+  const toggleOpts = { completionDay: markDay };
   // 서브태스크 — 항목이 있으면 기본 펼침, 없으면 접힘. 사용자가 토글하면 그 상태 유지.
   const [subOpen, setSubOpen] = useState(() => (t.subTasks?.length ?? 0) > 0);
   const [subInput, setSubInput] = useState("");
@@ -669,8 +942,9 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
   }, [t.subTasks?.length]);
   // 드롭 모드 — null | "before"(위로 이동) | "into"(하위로 넣기)
   const [dropMode, setDropMode] = useState(null);
-  // 호버 또는 선택 상태면 액션 아이콘 노출. 드래그는 done 아닌 비-compact 행이면 언제든 가능.
-  const showActions = !compact && (hover || selected);
+  // 호버 시 액션 노출. 스케줄링 중에는 📅만 항상 표시.
+  const showActions = !compact && hover;
+  const showScheduleBtn = !compact && (hover || schedulingActive);
   const showDrag = !compact && !t.done;
   const showHandle = !compact && hover && !t.done;
 
@@ -727,6 +1001,11 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
     window.dispatchEvent(new CustomEvent("todoary-open-memo", { detail: { memoId, todoId: t.id } }));
   };
 
+  const period = normalizedPeriod(t);
+  const schedLabel = period
+    ? (recRule ? `${periodLabel(t)} · ${recLabel(recRule)}` : periodLabel(t))
+    : null;
+
   return (
     <div
       onClick={onRowClick}
@@ -744,7 +1023,7 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
         // Things 3 식 — 선택 시 살짝 두꺼운 왼쪽 액센트 (큰 외곽선 대신)
         boxShadow: dropMode === "before"
           ? "inset 0 3px 0 var(--ink)"
-          : (selected ? "inset 3px 0 0 var(--ink)" : undefined),
+          : (schedulingActive ? "inset 3px 0 0 var(--ink)" : undefined),
         opacity: t.done ? 0.7 : 1,
         cursor: "default",
         position: "relative",
@@ -764,13 +1043,13 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
           }}
         >{showHandle ? "⋮⋮" : ""}</span>
         <button
-          onClick={(e) => { stop(e); actions.toggleTodo(t.id); }}
+          onClick={(e) => { stop(e); actions.toggleTodo(t.id, toggleOpts); }}
           className={"sk-check" + (t.done ? " done" : "")}
           style={{ cursor: "pointer", flexShrink: 0 }}
           title={t.done ? L("todo.undoDone") : L("todo.markDone")}
         />
         {/* 서브태스크 접힘 토글 — 항목 있거나 호버/선택일 때 노출 */}
-        {(hasSubs || hover || selected) && !compact && (
+        {(hasSubs || hover) && !compact && (
           <button
             onClick={(e) => { stop(e); setSubOpen(o => !o); }}
             title={subOpen ? L("todo.subCollapse") : L("todo.subExpand")}
@@ -828,12 +1107,12 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
           >{t.title}</span>
         )}
 
-        {/* 마감 뱃지 */}
-        {t.dueDate && (
+        {/* 일정 뱃지 — 기간·반복 또는 단일 마감일 */}
+        {schedLabel ? (
+          <span title={`${L("todo.period")} ${schedLabel}`} style={dueBadge}>{schedLabel}</span>
+        ) : t.dueDate ? (
           <span title={`${L("todo.due")} ${t.dueDate}`} style={dueBadge}>{fmtMD(t.dueDate)}</span>
-        )}
-        {/* 반복 표시 */}
-        {recRule && <span title={`${L("todo.repeat")} — ${recLabel(recRule)}`} style={{ fontSize: 12, color: "var(--ink-2)" }}>↻</span>}
+        ) : null}
 
         {(showActions || t.memoId) && !compact && (
           <button
@@ -843,14 +1122,29 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
           >📝</button>
         )}
 
-        {/* 호버/선택 시 액션 아이콘 */}
-        {showActions && (
+        {/* 호버/스케줄링 시 액션 아이콘 */}
+        {(showActions || showScheduleBtn) && (
           <>
-            <button onClick={(e) => { stop(e); actions.togglePin(t.id); }} title={t.pinned ? L("todo.unpin") : L("todo.pin")}
-              style={{ ...iconBtn, color: t.pinned ? "#7a5a10" : "var(--ink-3)", fontWeight: t.pinned ? 800 : 400 }}>!</button>
-            <button onClick={(e) => { stop(e); setDueOpen(o => !o); }} title={L("todo.dueDate")} style={iconBtn}>📅</button>
-            <button onClick={(e) => { stop(e); setRecOpen(o => !o); }} title={L("todo.repeat")} style={{ ...iconBtn, color: recRule ? "var(--ink)" : "var(--ink-3)" }}>↻</button>
-            <DelBtn onClick={(e) => { if (e && e.stopPropagation) e.stopPropagation(); actions.removeTodo(t.id); }} />
+            {showActions && (
+              <button onClick={(e) => { stop(e); actions.togglePin(t.id); }} title={t.pinned ? L("todo.unpin") : L("todo.pin")}
+                style={{ ...iconBtn, color: t.pinned ? "#7a5a10" : "var(--ink-3)", fontWeight: t.pinned ? 800 : 400 }}>!</button>
+            )}
+            {showScheduleBtn && (
+              <button
+                onClick={(e) => { stop(e); if (onScheduleDate) onScheduleDate(t.id); }}
+                title={L("todo.dueDate")}
+                style={{
+                  ...iconBtn,
+                  color: schedulingActive ? "var(--ink)" : "var(--ink-3)",
+                  background: schedulingActive ? "var(--hi-soft)" : "transparent",
+                  borderRadius: 4,
+                  outline: schedulingActive ? "1.5px solid var(--point)" : "none",
+                }}
+              >📅</button>
+            )}
+            {showActions && (
+              <DelBtn onClick={(e) => { if (e && e.stopPropagation) e.stopPropagation(); actions.removeTodo(t.id); }} />
+            )}
           </>
         )}
       </div>
@@ -863,7 +1157,7 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
           display: "flex", flexDirection: "column", gap: 1,
         }} onClick={stop}>
           {subs.map(st => (
-            <SubTaskRow key={st.id} st={st} parentId={t.id} actions={actions} />
+            <SubTaskRow key={st.id} st={st} parentId={t.id} actions={actions} completionDay={markDay} />
           ))}
           {/* 새 항목 입력 — 버튼 토글 없이 항상 보임. 클릭해서 바로 타이핑, Enter 로 추가하고 연속 입력. */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "1px 0" }}>
@@ -899,33 +1193,14 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
         </div>
       )}
 
-      {/* 마감일 펼침 */}
-      {dueOpen && showActions && (
-        <div style={expanderRow} onClick={stop}>
-          <span style={miniLabel}>{L("todo.due")}</span>
-          <input type="date" value={t.dueDate || ""} onChange={(e) => actions.setTodoDue(t.id, e.target.value)} style={dateInput} />
-          {t.dueDate && <button onClick={(e) => { stop(e); actions.setTodoDue(t.id, null); setDueOpen(false); }} style={miniBtn}>{L("todo.clear")}</button>}
-          <span style={miniLabel}>{L("todo.period")}</span>
-          <input type="date" value={t.startDate || ""} onChange={(e) => actions.setTodoPeriod(t.id, e.target.value, t.endDate || e.target.value)} style={dateInput} />
-          <span style={miniLabel}>~</span>
-          <input type="date" value={t.endDate || ""} onChange={(e) => actions.setTodoPeriod(t.id, t.startDate || e.target.value, e.target.value)} style={dateInput} />
-          {(t.startDate || t.endDate) && <button onClick={(e) => { stop(e); actions.setTodoPeriod(t.id, null, null); }} style={miniBtn}>{L("todo.clearPeriod")}</button>}
-          <button onClick={(e) => { stop(e); setDueOpen(false); }} style={miniBtn}>{L("todo.close")}</button>
-        </div>
-      )}
-
-      {/* 반복 펼침 */}
-      {recOpen && showActions && (
-        <div onClick={stop}>
-          <RecurrencePanel t={t} recRule={recRule} actions={actions} onClose={() => setRecOpen(false)} />
-        </div>
-      )}
     </div>
   );
 }
 
 // 서브태스크 한 줄 — 호버 시 × 노출, 제목 클릭하면 인라인 편집
-function SubTaskRow({ st, parentId, actions }) {
+function SubTaskRow({ st, parentId, actions, completionDay }) {
+  const markDay = completionDay || diary.today();
+  const toggleOpts = { completionDay: markDay };
   const [hover, setHover] = useState(false);
   const [editing, setEditing] = useState(false);
   const linkUrl = (st.linkUrl || "").trim();
@@ -952,7 +1227,7 @@ function SubTaskRow({ st, parentId, actions }) {
       }}
     >
       <button
-        onClick={(e) => { e.stopPropagation(); actions.toggleSubTask(parentId, st.id); }}
+        onClick={(e) => { e.stopPropagation(); actions.toggleSubTask(parentId, st.id, toggleOpts); }}
         className={"sk-check" + (st.done ? " done" : "")}
         style={{ cursor: "pointer", flexShrink: 0, transform: "scale(0.82)" }}
         title={st.done ? L("todo.undoDone") : L("todo.markDone")}
@@ -1026,14 +1301,24 @@ function SubTaskRow({ st, parentId, actions }) {
   );
 }
 
-function RecurrencePanel({ t, recRule, actions, onClose }) {
+function RecurrencePanel({ t, recRule, actions, onClose, onApply, onClearSchedule, onPreviewChange }) {
   const [freq, setFreq] = useState(recRule?.frequency || "daily");
   const initialDays = Array.isArray(recRule?.weeklyDays) && recRule.weeklyDays.length
     ? recRule.weeklyDays.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6)
-    : [1, 3, 5];
+    : [new Date().getDay()];
   const [days, setDays] = useState(initialDays);
   const DOW = (window.i18n && window.i18n.weekdays) ? window.i18n.weekdays() : ["일", "월", "화", "수", "목", "금", "토"];
   const toggleDay = (d) => setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort());
+  const p = normalizedPeriod(t);
+
+  useEffect(() => {
+    if (!onPreviewChange) return;
+    const weeklyDays = days.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6);
+    onPreviewChange({
+      frequency: freq,
+      weeklyDays: freq === "weekly" ? weeklyDays : [],
+    });
+  }, [freq, days]);
 
   const apply = () => {
     const weeklyDays = days.map(Number).filter(d => Number.isInteger(d) && d >= 0 && d <= 6);
@@ -1044,18 +1329,29 @@ function RecurrencePanel({ t, recRule, actions, onClose }) {
       const id = actions.addRecurrence(patch);
       actions.updateTodo(t.id, { recurrenceId: id });
     }
-    onClose();
+    if (onApply) onApply();
+    else onClose();
   };
-  const remove = () => { if (recRule) actions.removeRecurrence(recRule.id); onClose(); };
 
   return (
-    <div style={expanderRow}>
+    <div style={{
+      ...expanderRow,
+      marginTop: 0,
+      borderTop: "1.1px solid var(--ink)",
+      borderRadius: 0,
+      flexShrink: 0,
+    }}>
       <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", width: "100%" }}>
+        {p && (
+          <span style={{ ...miniLabel, marginRight: 2 }}>
+            {periodLabel(t)}
+          </span>
+        )}
         {[["daily", L("todo.recDaily")], ["weekdays", L("todo.recWeekdays")], ["weekly", L("todo.recWeekly")]].map(([v, lbl]) => (
           <button key={v} onClick={() => setFreq(v)} style={{ ...chipBtn, background: freq === v ? "var(--hi)" : "var(--paper)" }}>{lbl}</button>
         ))}
         {freq === "weekly" && (
-          <div style={{ display: "flex", gap: 3, marginLeft: 4 }}>
+          <div style={{ display: "flex", gap: 3, marginLeft: 2 }}>
             {DOW.map((d, idx) => (
               <button key={d} onClick={() => toggleDay(idx)} style={{
                 ...chipBtn, padding: "1px 7px",
@@ -1075,8 +1371,12 @@ function RecurrencePanel({ t, recRule, actions, onClose }) {
             opacity: freq === "weekly" && days.length === 0 ? 0.45 : 1,
             cursor: freq === "weekly" && days.length === 0 ? "not-allowed" : "pointer",
           }}
-        >{L("todo.apply")}</button>
-        {recRule && <button onClick={remove} style={{ ...miniBtn, color: "var(--bad)" }}>{L("todo.removeRepeat")}</button>}
+        >{L("todo.save")}</button>
+        {onClearSchedule && p && (
+          <button onClick={onClearSchedule} title={L("todo.clearScheduleHint")} style={{ ...miniBtn, color: "var(--bad)" }}>
+            {L("todo.clearSchedule")}
+          </button>
+        )}
         <button onClick={onClose} style={miniBtn}>{L("todo.close")}</button>
       </div>
     </div>
@@ -1114,10 +1414,6 @@ const miniBtn = {
 };
 const miniLabel = {
   fontFamily: "var(--hand)", fontSize: 11, fontWeight: 700, color: "var(--ink-2)",
-};
-const dateInput = {
-  border: "1px solid var(--ink-soft)", borderRadius: 6, padding: "2px 6px",
-  fontFamily: "var(--mono)", fontSize: 12, color: "var(--ink)", background: "var(--paper)",
 };
 const subIconBtn = {
   all: "unset", cursor: "pointer", flexShrink: 0,

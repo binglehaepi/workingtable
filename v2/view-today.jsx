@@ -217,7 +217,7 @@ function WeekPane({ onPickDay }) {
     const all = [...(dueByDay[d] || []), ...(doneByDay[d] || [])];
     return sum + all.filter(t => t.done).length;
   }, 0);
-  const streak = computeRetroStreak(state.retros ?? []);
+  const streak = diary.select.workStreak(state);
 
   return (
     <>
@@ -264,7 +264,7 @@ function WeekPane({ onPickDay }) {
             isToday={dayStrings[i] === todayStr}
             isFuture={dayStrings[i] > todayStr}
             onClick={() => onPickDay(dayStrings[i])}
-            onToggleTodo={(id) => actions.toggleTodo(id)}
+            onToggleTodo={(id) => actions.toggleTodo(id, { completionDay: dayStrings[i] })}
             colIdx={i % 2}
             rowIdx={Math.floor(i / 2)}
           />
@@ -281,19 +281,6 @@ function WeekPane({ onPickDay }) {
       <WeekStatsFooter weekTotalMin={weekTotalMin} weekDoneCnt={weekDoneCnt} streak={streak} />
     </>
   );
-}
-
-// 오늘부터 거꾸로 회고가 있는 날 카운트
-function computeRetroStreak(retros) {
-  const set = new Set(retros.map(r => r.date));
-  let n = 0;
-  let cur = new Date();
-  cur.setHours(0,0,0,0);
-  while (set.has(dateOnly(cur))) {
-    n++;
-    cur = addDays(cur, -1);
-  }
-  return n;
 }
 
 const DAY_KEYS = [
@@ -623,7 +610,7 @@ function DayPane({ date, onBack, onJump }) {
           items={bundle.items}
           doneCount={bundle.doneCount}
           totalCount={bundle.totalCount}
-          onToggleTodo={(id) => actions.toggleTodo(id)}
+          onToggleTodo={(id) => actions.toggleTodo(id, { completionDay: date })}
           totalSec={totalSec}
           topSong={bundle.topSong}
         />

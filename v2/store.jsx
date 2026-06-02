@@ -66,6 +66,33 @@ const today = () => {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
 };
+/** 완료 시각 — 로컬 시계 기준(타임존 Z 없음, 달력일 밀림 방지) */
+function completedAtNow() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${y}-${mo}-${dd}T${hh}:${mm}:${ss}`;
+}
+/** ISO/타임스탬프 → 로컬 달력일 YYYY-MM-DD (today()와 동일 기준) */
+function localDayFromIso(iso) {
+  if (!iso) return null;
+  const s = String(iso).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const hasTz = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(s);
+  const d = new Date(hasTz ? s : s.replace(" ", "T"));
+  if (Number.isNaN(d.getTime())) {
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    return m ? m[1] : null;
+  }
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
 function normalizeWeeklyDays(days) {
   const seen = new Set();
   return (Array.isArray(days) ? days : [])
@@ -285,6 +312,9 @@ function load() {
       order: t.order ?? i,
       done: !!t.done,
       completedAt: t.completedAt ?? (t.doneTs ? new Date(t.doneTs).toISOString() : (t.doneAt ? t.doneAt + "T12:00:00" : null)),
+      completedDay: t.completedDay ?? (t.done
+        ? (localDayFromIso(t.completedAt) || (t.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(String(t.dueDate)) ? t.dueDate : null) || localDayFromIso(t.createdAt))
+        : null),
       recurrenceId: t.recurrenceId ?? null,
       memoId: t.memoId ?? null,
       trackedSeconds: t.trackedSeconds ?? 0,
@@ -358,16 +388,164 @@ function normalizedTodoPeriod(t) {
   return start <= end ? { start, end } : { start: end, end: start };
 }
 function completionDay(t) {
-  if (t.completedAt) return t.completedAt.slice(0, 10);
   if (!t.done) return null;
-  if (t.dueDate) return t.dueDate;
-  return (t.createdAt || "").slice(0, 10) || null;
+  if (t.completedDay && /^\d{4}-\d{2}-\d{2}$/.test(t.completedDay)) return t.completedDay;
+  if (t.completedAt) {
+    const fromCompleted = localDayFromIso(t.completedAt);
+    if (fromCompleted) return fromCompleted;
+  }
+  const fromCreated = localDayFromIso(t.createdAt)
+    || (String(t.createdAt || "").match(/^\d{4}-\d{2}-\d{2}/)?.[0] || null);
+  return fromCreated || today();
 }
-function matchesTodoDay(t, day, today) {
+
+/** 작업한 날(YYYY-MM-DD) 집합 — 트래커 분·완료한 할 일 기준, 프로젝트 무관 */
+function workDaysSet(s) {
+  const days = new Set();
+  (s.workSessions ?? []).forEach((w) => {
+    if ((w.minutes || 0) > 0 && w.date) days.add(w.date);
+  });
+  (s.todos ?? []).forEach((todo) => {
+    if (!todo.done) return;
+    const d = completionDay(todo);
+    if (d) days.add(d);
+  });
+  return days;
+}
+
+/** 오늘(또는 오늘 기록 없으면 어제)부터 거꾸로 이어진 작업일 수 */
+function computeWorkStreak(s) {
+  const days = workDaysSet(s);
+  let cur = new Date();
+  cur.setHours(0, 0, 0, 0);
+  const iso = (d) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${dd}`;
+  };
+  if (!days.has(iso(cur))) {
+    cur.setDate(cur.getDate() - 1);
+    cur.setHours(0, 0, 0, 0);
+  }
+  let n = 0;
+  while (days.has(iso(cur))) {
+    n++;
+    cur.setDate(cur.getDate() - 1);
+    cur.setHours(0, 0, 0, 0);
+  }
+  return n;
+}
+
+function applyTodoDoneState(t, nextDone, completionDayOpt) {
+  const day = completionDayOpt || today();
+  const nextSubs = (t.subTasks || []).map((st) => ({
+    ...st,
+    done: nextDone,
+    completedAt: nextDone ? (st.completedAt || completedAtNow()) : null,
+  }));
+  return {
+    ...t,
+    done: nextDone,
+    completedAt: nextDone ? (t.completedAt || completedAtNow()) : null,
+    completedDay: nextDone ? day : null,
+    subTasks: nextSubs,
+  };
+}
+function dayOfWeek(iso) {
+  const [yy, mm, dd] = iso.split("-").map(Number);
+  return new Date(yy, mm - 1, dd).getDay();
+}
+function dayMatchesRecurrence(day, recRule) {
+  if (!recRule) return true;
+  const dow = dayOfWeek(day);
+  if (recRule.frequency === "daily") return true;
+  if (recRule.frequency === "weekdays") return dow >= 1 && dow <= 5;
+  if (recRule.frequency === "weekly") return (recRule.weeklyDays || []).includes(dow);
+  return false;
+}
+function recurrenceRuleForTodo(t, recurrences) {
+  if (!t?.recurrenceId) return null;
+  return (recurrences ?? []).find(r => r.id === t.recurrenceId) || null;
+}
+function hasRecurrenceCompletionForDay(recurrenceId, day, todos, excludeId) {
+  return (todos ?? []).some((td) => td.recurrenceId === recurrenceId
+    && td.id !== excludeId
+    && td.done
+    && completionDay(td) === day
+    && !normalizedTodoPeriod(td));
+}
+function resetTemplateSubTasks(subs) {
+  return (subs || []).map((st) => ({ ...st, done: false, completedAt: null }));
+}
+function createRecurrenceCompletionInstance(t, day, recId) {
+  return {
+    id: uid(),
+    projectId: t.projectId,
+    title: t.title,
+    pinned: false,
+    pinnedAt: null,
+    dueDate: null,
+    startDate: null,
+    endDate: null,
+    order: t.order ?? 0,
+    done: true,
+    completedAt: completedAtNow(),
+    completedDay: day,
+    recurrenceId: recId,
+    memoId: null,
+    trackedSeconds: t.trackedSeconds ?? 0,
+    subTasks: (t.subTasks || []).map((st) => ({
+      id: uid(),
+      title: st.title,
+      done: !!st.done,
+      completedAt: st.done ? (st.completedAt || completedAtNow()) : null,
+      linkUrl: st.linkUrl || "",
+    })),
+    createdAt: day,
+    roomVisible: !!t.roomVisible,
+  };
+}
+function completeRecurringTodo(s, t, day, subsForInstance) {
+  const rec = recurrenceRuleForTodo(t, s.recurrences);
+  if (!rec || !normalizedTodoPeriod(t) || t.done) return s;
+  if (hasRecurrenceCompletionForDay(rec.id, day, s.todos, t.id)) return s;
+  const source = subsForInstance != null ? { ...t, subTasks: subsForInstance } : {
+    ...t,
+    subTasks: (t.subTasks || []).map((st) => ({
+      ...st,
+      done: true,
+      completedAt: st.completedAt || completedAtNow(),
+    })),
+  };
+  const instance = createRecurrenceCompletionInstance(source, day, rec.id);
+  return {
+    ...s,
+    todos: [
+      ...s.todos.map((td) => (td.id === t.id ? {
+        ...td,
+        done: false,
+        completedAt: null,
+        completedDay: null,
+        subTasks: resetTemplateSubTasks(td.subTasks),
+      } : td)),
+      instance,
+    ],
+  };
+}
+function matchesTodoDay(t, day, today, recurrencesOpt) {
   const comp = completionDay(t);
   if (t.done) return comp === day;
+  const recurrences = recurrencesOpt ?? getState().recurrences ?? [];
+  const todos = getState().todos ?? [];
   const period = normalizedTodoPeriod(t);
-  if (period && period.start <= day && day <= period.end) return true;
+  if (period) {
+    if (day < period.start || day > period.end) return false;
+    const rec = recurrenceRuleForTodo(t, recurrences);
+    if (rec && !dayMatchesRecurrence(day, rec)) return false;
+    if (rec && hasRecurrenceCompletionForDay(rec.id, day, todos, t.id)) return false;
+    return true;
+  }
   if (t.dueDate === day) return true;
   if (day === today && !t.dueDate && !period) return true;
   if (day === today && t.dueDate && t.dueDate < today) return true;
@@ -436,34 +614,64 @@ const actions = {
           startDate: opts.startDate ?? null,
           endDate: opts.endDate ?? null,
           order: nextOrder,
-          done: false, completedAt: null,
+          done: false, completedAt: null, completedDay: null,
           recurrenceId: opts.recurrenceId ?? null,
           memoId: opts.memoId ?? null,
           trackedSeconds: 0,
           subTasks: [],
-          createdAt: today(),
+          createdAt: opts.dueDate || today(),
           roomVisible: false,
         }],
       };
     });
     return id;
   },
-  toggleTodo(id) {
-    setState(s => ({
-      ...s,
-      todos: s.todos.map(t => t.id === id
-        ? { ...t, done: !t.done, completedAt: !t.done ? new Date().toISOString() : null }
-        : t),
-    }));
+  toggleTodo(id, opts = {}) {
+    setState(s => {
+      const t = s.todos.find(x => x.id === id);
+      if (!t) return s;
+      const day = opts.completionDay || today();
+
+      if (t.done && t.recurrenceId && !normalizedTodoPeriod(t)) {
+        if (!opts.completionDay || completionDay(t) === day) {
+          return { ...s, todos: s.todos.filter(x => x.id !== id) };
+        }
+        return s;
+      }
+
+      if (!t.done && normalizedTodoPeriod(t) && recurrenceRuleForTodo(t, s.recurrences)) {
+        return completeRecurringTodo(s, t, day);
+      }
+
+      return {
+        ...s,
+        todos: s.todos.map((x) => (x.id === id ? applyTodoDoneState(x, !x.done, day) : x)),
+      };
+    });
   },
-  setTodoDone(id, done) {
+  setTodoDone(id, done, opts = {}) {
     const nextDone = !!done;
-    setState(s => ({
-      ...s,
-      todos: s.todos.map(t => t.id === id
-        ? { ...t, done: nextDone, completedAt: nextDone ? (t.completedAt || new Date().toISOString()) : null }
-        : t),
-    }));
+    const day = opts.completionDay || today();
+    setState(s => {
+      const t = s.todos.find(x => x.id === id);
+      if (!t) return s;
+
+      if (!nextDone && t.done && t.recurrenceId && !normalizedTodoPeriod(t)) {
+        if (!opts.completionDay || completionDay(t) === day) {
+          return { ...s, todos: s.todos.filter(x => x.id !== id) };
+        }
+        return s;
+      }
+
+      if (nextDone && !t.done && normalizedTodoPeriod(t) && recurrenceRuleForTodo(t, s.recurrences)) {
+        return completeRecurringTodo(s, t, day);
+      }
+
+      return {
+        ...s,
+        todos: s.todos.map((x) => (x.id === id ? applyTodoDoneState(x, nextDone, day) : x)),
+      };
+    });
   },
   togglePin(id) {
     setState(s => ({
@@ -493,6 +701,39 @@ const actions = {
       } : t),
     }));
   },
+  // 기간·반복 일정 해제 — 추가했던 날짜(createdAt)로 되돌림
+  clearTodoSchedule(id) {
+    setState(s => {
+      const t = s.todos.find(x => x.id === id);
+      if (!t) return s;
+      const recId = t.recurrenceId;
+      const baseDate = localDayFromIso(t.createdAt)
+        || String(t.createdAt || "").match(/^\d{4}-\d{2}-\d{2}/)?.[0]
+        || today();
+      const todos = s.todos.map((td) => {
+        if (td.id === id) {
+          return {
+            ...td,
+            startDate: null,
+            endDate: null,
+            dueDate: baseDate,
+            recurrenceId: null,
+            done: false,
+            completedAt: null,
+            completedDay: null,
+          };
+        }
+        if (recId && td.recurrenceId === recId && td.id !== id) {
+          return { ...td, recurrenceId: null };
+        }
+        return td;
+      });
+      const recurrences = recId
+        ? (s.recurrences ?? []).filter(r => r.id !== recId)
+        : (s.recurrences ?? []);
+      return { ...s, todos, recurrences };
+    });
+  },
   // 달력 드롭으로 단일 날짜 이동 — dueDate 만 설정하고 기간은 비움.
   moveTodoToDate(id, date) {
     if (!date) return;
@@ -521,32 +762,78 @@ const actions = {
       } : t),
     }));
   },
-  toggleSubTask(todoId, subId) {
-    setState(s => ({
-      ...s,
-      todos: s.todos.map(t => t.id === todoId ? {
-        ...t,
-        subTasks: (t.subTasks || []).map(st => st.id === subId ? {
-          ...st,
-          done: !st.done,
-          completedAt: !st.done ? new Date().toISOString() : null,
-        } : st),
-      } : t),
-    }));
+  toggleSubTask(todoId, subId, opts = {}) {
+    const day = opts.completionDay || today();
+    setState(s => {
+      let t = s.todos.find(x => x.id === todoId);
+      if (!t) return s;
+      const subs = (t.subTasks || []).map((st) => (st.id === subId ? {
+        ...st,
+        done: !st.done,
+        completedAt: !st.done ? completedAtNow() : null,
+      } : st));
+      const hasSubs = subs.length > 0;
+      const allDone = hasSubs && subs.every((st) => st.done);
+      if (!hasSubs) {
+        return { ...s, todos: s.todos.map(x => x.id === todoId ? { ...x, subTasks: subs } : x) };
+      }
+      t = { ...t, subTasks: subs };
+      if (allDone && normalizedTodoPeriod(t) && recurrenceRuleForTodo(t, s.recurrences)) {
+        return completeRecurringTodo(s, t, day, subs);
+      }
+      if (allDone) {
+        return {
+          ...s,
+          todos: s.todos.map(x => x.id === todoId ? applyTodoDoneState(t, true, day) : x),
+        };
+      }
+      return {
+        ...s,
+        todos: s.todos.map(x => x.id === todoId ? {
+          ...t,
+          done: false,
+          completedAt: null,
+          completedDay: null,
+        } : x),
+      };
+    });
   },
-  setSubTaskDone(todoId, subId, done) {
+  setSubTaskDone(todoId, subId, done, opts = {}) {
     const nextDone = !!done;
-    setState(s => ({
-      ...s,
-      todos: s.todos.map(t => t.id === todoId ? {
-        ...t,
-        subTasks: (t.subTasks || []).map(st => st.id === subId ? {
-          ...st,
-          done: nextDone,
-          completedAt: nextDone ? (st.completedAt || new Date().toISOString()) : null,
-        } : st),
-      } : t),
-    }));
+    const day = opts.completionDay || today();
+    setState(s => {
+      let t = s.todos.find(x => x.id === todoId);
+      if (!t) return s;
+      const subs = (t.subTasks || []).map((st) => (st.id === subId ? {
+        ...st,
+        done: nextDone,
+        completedAt: nextDone ? (st.completedAt || completedAtNow()) : null,
+      } : st));
+      const hasSubs = subs.length > 0;
+      const allDone = hasSubs && subs.every((st) => st.done);
+      if (!hasSubs) {
+        return { ...s, todos: s.todos.map(x => x.id === todoId ? { ...x, subTasks: subs } : x) };
+      }
+      t = { ...t, subTasks: subs };
+      if (allDone && normalizedTodoPeriod(t) && recurrenceRuleForTodo(t, s.recurrences)) {
+        return completeRecurringTodo(s, t, day, subs);
+      }
+      if (allDone) {
+        return {
+          ...s,
+          todos: s.todos.map(x => x.id === todoId ? applyTodoDoneState(t, true, day) : x),
+        };
+      }
+      return {
+        ...s,
+        todos: s.todos.map(x => x.id === todoId ? {
+          ...t,
+          done: false,
+          completedAt: null,
+          completedDay: null,
+        } : x),
+      };
+    });
   },
   renameSubTask(todoId, subId, title) {
     const text = (title || "").trim();
@@ -638,7 +925,7 @@ const actions = {
           endDate: opts.endDate ?? todo.endDate ?? null,
           order: nextOrder,
           done,
-          completedAt: done ? (todo.completedAt || new Date().toISOString()) : null,
+          completedAt: done ? (todo.completedAt || completedAtNow()) : null,
           recurrenceId: null,
           memoId: null,
           trackedSeconds: todo.trackedSeconds ?? 0,
@@ -648,7 +935,7 @@ const actions = {
               id: uid(),
               title: String(st.title || "").trim(),
               done: subDone,
-              completedAt: subDone ? (st.completedAt || new Date().toISOString()) : null,
+              completedAt: subDone ? (st.completedAt || completedAtNow()) : null,
               linkUrl: String(st.linkUrl || "").trim(),
             };
           }).filter(st => st.title) : [],
@@ -761,12 +1048,16 @@ const actions = {
   generateRecurrences() {
     setState(s => {
       const t = today();
-      const dow = new Date(t + "T00:00:00").getDay();   // 0=일 .. 6=토
+      const [yy, mm, dd] = t.split("-").map(Number);
+      const dow = new Date(yy, mm - 1, dd).getDay();   // 0=일 .. 6=토 (로컬)
       const rules = (s.recurrences ?? []).filter(r => r.active);
       const newTodos = [];
       const orderMap = {};
       // 프로젝트별 현재 최대 order
       for (const r of rules) {
+        // 기간 스케줄(달력 드래그)과 연결된 규칙은 단일 할 일로 표시 — 별도 인스턴스 생성 안 함
+        const periodLinked = s.todos.some(td => td.recurrenceId === r.id && normalizedTodoPeriod(td));
+        if (periodLinked) continue;
         const matches =
           r.frequency === "daily" ? true
           : r.frequency === "weekdays" ? (dow >= 1 && dow <= 5)
@@ -1316,6 +1607,8 @@ const select = {
       .filter(x => x.minutes > 0)
       .sort((a, b) => b.minutes - a.minutes);
   },
+  /** 연속 작업일 — workSessions·완료 할 일 기준 (일기 retros 아님) */
+  workStreak: (s) => computeWorkStreak(s),
   // 하루 단위 통합 — 그 날의 할 일(마감 + 그 날 완료) / 작업분 / 회고 / 톱 곡
   dayBundle: (s, date) => {
     const pid = s.currentProjectId;
@@ -1349,5 +1642,5 @@ const select = {
 // 글로벌 노출
 window.diary = {
   useDiary, actions, select, today, fmtKDate, fmtKDateShort, getState, memoTitleFromHtml, MEMO_ICONS,
-  pomoCycleMs, pomoIdleWorkMs, matchesTodoDay, completionDay,
+  pomoCycleMs, pomoIdleWorkMs, matchesTodoDay, dayMatchesRecurrence, completionDay, localDayFromIso, completedAtNow,
 };
