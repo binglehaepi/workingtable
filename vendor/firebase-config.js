@@ -54,13 +54,6 @@ service cloud.firestore {
         allow create, update, delete: if signedIn() && request.auth.uid == uid;
       }
 
-      match /claps/{clapId} {
-        allow read: if isMember(roomId);
-        allow create: if isMember(roomId) && request.resource.data.fromUid == request.auth.uid;
-        // 마지막 멤버가 나갈 때 박수까지 정리해서 유령 데이터 안 남게 — 멤버만 삭제 가능.
-        allow delete: if isMember(roomId);
-        allow update: if false;
-      }
     }
   }
 }

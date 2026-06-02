@@ -1,4 +1,4 @@
-/* global React, diary, ViewHeader, Editable, DelBtn */
+/* global React, diary, ViewHeader, Editable, DelBtn, useI18n, L */
 // ===========================================================
 // 프롬프트 함 — 추가 / 복사(사용횟수↑) / 수정 / 삭제 / 검색
 // ===========================================================
@@ -6,6 +6,7 @@ const { useState } = React;
 
 function PromptView() {
   const { state, actions } = diary.useDiary();
+  useI18n();
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
@@ -78,7 +79,7 @@ function PromptView() {
               {p.uses ?? 0}회 사용
             </span>
             <DelBtn onClick={() => {
-              if (confirm("이 프롬프트를 삭제할까요?")) actions.removePrompt(p.id);
+              if (confirm(L("prompt.delConfirm"))) actions.removePrompt(p.id);
             }} />
           </div>
           <div style={{ fontFamily: "var(--hand-2)", fontSize: 16, lineHeight: 1.3 }}>

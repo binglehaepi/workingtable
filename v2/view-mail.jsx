@@ -108,7 +108,7 @@ function InquiryRow({ m, onPick, actions }) {
       <button onClick={() => actions.toggleReplied(m.id)}
         className={"sk-check" + (m.replied ? " done" : "")}
         style={{ cursor: "pointer", flexShrink: 0 }}
-        title={m.replied ? "미답으로" : "답장함으로"} />
+        title={m.replied ? L("mail.markUnread") : L("mail.markRepliedTip")} />
       <DelBtn onClick={() => actions.removeEmail(m.id)} />
     </div>
   );
@@ -169,11 +169,34 @@ function MailDetail({ m, actions, onBack }) {
 }
 
 // ---- 2번째 화면 아래 — 초안 + 프리셋 칩 ----
+function copyText(text) {
+  if (!text || !String(text).trim()) return;
+  const value = String(text);
+  const fallback = () => {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (_) {}
+    document.body.removeChild(ta);
+  };
+  try {
+    const p = navigator.clipboard && navigator.clipboard.writeText(value);
+    if (p && p.catch) p.catch(fallback);
+    else fallback();
+  } catch (_) {
+    fallback();
+  }
+}
+
 function DraftEditor({ m, actions, presets }) {
-  function openPlatform() {
+  async function openPlatform() {
     let url = m.platformUrl;
     if (!url) {
-      url = prompt(L("mail.sitePrompt")) || "";
+      url = (await window.dialog.prompt(L("mail.sitePrompt"))) || "";
       if (!url.trim()) return;
       actions.updateEmail(m.id, { platformUrl: url.trim() });
       url = url.trim();
@@ -182,11 +205,11 @@ function DraftEditor({ m, actions, presets }) {
   }
   function copyDraft() {
     const text = m.draft ?? "";
-    if (!text.trim()) return;
-    try { navigator.clipboard.writeText(text); } catch (_) {}
+    copyText(text);
   }
   function applyPreset(p) {
     actions.updateEmail(m.id, { draft: p.text });
+    copyText(p.text);
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -270,7 +293,10 @@ function PresetsList({ presets, actions }) {
     setEditing(null);
   };
   const cancel = () => setEditing(null);
-  const del = (id) => { if (confirm(L("mail.presetDelConfirm"))) actions.removeReplyPreset(id); };
+  const del = async (id) => {
+    const ok = await window.dialog.confirm(L("mail.presetDelConfirm"));
+    if (ok) actions.removeReplyPreset(id);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}>
@@ -294,14 +320,14 @@ function PresetsList({ presets, actions }) {
         {presets.map(p => editing === p.id ? (
           <PresetEditor key={p.id} label={label} setLabel={setLabel} text={text} setText={setText} onSave={save} onCancel={cancel} />
         ) : (
-          <PresetRow key={p.id} p={p} onEdit={() => startEdit(p)} onDelete={() => del(p.id)} />
+          <PresetRow key={p.id} p={p} onCopy={() => copyText(p.text)} onEdit={() => startEdit(p)} onDelete={() => del(p.id)} />
         ))}
       </div>
     </div>
   );
 }
 
-function PresetRow({ p, onEdit, onDelete }) {
+function PresetRow({ p, onCopy, onEdit, onDelete }) {
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 7, padding: "5px 9px", marginBottom: 5,
@@ -309,18 +335,19 @@ function PresetRow({ p, onEdit, onDelete }) {
       background: "var(--paper)",
     }}>
       <span style={{ fontSize: 12, flexShrink: 0 }}>⚡</span>
-      <button onClick={onEdit} style={{
+      <button onClick={onCopy} title={L("mail.copyClipboard")} style={{
         all: "unset", cursor: "pointer", flex: 1, minWidth: 0,
       }}>
         <div style={{
           fontFamily: "var(--hand)", fontSize: 13, fontWeight: 700, color: "var(--ink)",
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-        }}>{p.label || "(라벨 없음)"}</div>
+        }}>{p.label || L("mail.noLabel")}</div>
         <div style={{
           fontFamily: "var(--hand)", fontSize: 11, color: "var(--ink-2)",
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", lineHeight: 1.3,
         }}>{(p.text || "").slice(0, 60)}</div>
       </button>
+      <button onClick={onEdit} title={L("mail.edit")} style={mailIconBtn}>✎</button>
       <DelBtn onClick={onDelete} />
     </div>
   );
@@ -375,6 +402,12 @@ const mailBtn = {
   padding: "4px 12px", borderRadius: 99,
   border: "1.1px solid var(--ink)", background: "var(--paper)",
   fontFamily: "var(--hand)", fontSize: 13, color: "var(--ink)",
+};
+const mailIconBtn = {
+  ...mailBtn,
+  width: 23, height: 23, padding: 0,
+  display: "grid", placeItems: "center",
+  borderRadius: 6, flexShrink: 0,
 };
 
 window.MailView = MailView;

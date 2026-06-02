@@ -66,6 +66,16 @@ const today = () => {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
 };
+function normalizeWeeklyDays(days) {
+  const seen = new Set();
+  return (Array.isArray(days) ? days : [])
+    .map(Number)
+    .filter(d => Number.isInteger(d) && d >= 0 && d <= 6 && !seen.has(d) && (seen.add(d), true))
+    .sort((a, b) => a - b);
+}
+function normalizeFrequency(frequency) {
+  return ["daily", "weekdays", "weekly"].includes(frequency) ? frequency : "daily";
+}
 const fmtKDate = (iso) => {
   const [y, m, d] = iso.split("-").map(Number);
   const dow = ["일","월","화","수","목","금","토"][new Date(y, m - 1, d).getDay()];
@@ -124,12 +134,25 @@ function memoTitleFromHtml(html) {
   if (/<a /i.test(html)) return "🔗 링크";
   return "";
 }
-const MEMO_ICONS = [
-  "🐰", "🐱", "🐶", "🦊", "🐻", "🐼", "🐸", "🐧",
-  "🌸", "🌷", "🍓", "🍰", "🍞", "🍵", "☕", "🍒",
-  "⭐", "💎", "🌙", "🌈", "💌", "🎀", "🎈", "🎁",
-  "📚", "✏️", "🖍", "💡", "🔑", "🎵", "🎲", "💖",
-];
+function todoMemoHtml(todo) {
+  const todoId = memoEscapeHtml(todo?.id || "");
+  const checked = todo?.done ? ' checked="checked"' : "";
+  return `<div data-linked-todo="${todoId}"><input type="checkbox" data-linked-todo-check="${todoId}"${checked} /> <strong>${memoEscapeHtml(todo?.title || "")}</strong></div>${todoSubTaskMemoHtml(todo)}<div><br></div>`;
+}
+function todoSubTaskMemoHtml(todo, existingHtml = "") {
+  const todoId = memoEscapeHtml(todo?.id || "");
+  return (todo?.subTasks || []).filter(st => {
+    const subId = memoEscapeHtml(st.id || "");
+    return subId && !existingHtml.includes(`data-linked-subtask-check="${subId}"`);
+  }).map(st => {
+    const subId = memoEscapeHtml(st.id || "");
+    const subChecked = st.done ? ' checked="checked"' : "";
+    return `<div data-linked-subtask="${subId}" style="margin-left:22px"><input type="checkbox" data-linked-subtask-check="${subId}" data-linked-subtask-parent="${todoId}"${subChecked} /> <span>${memoEscapeHtml(st.title || "")}</span></div>`;
+  }).join("");
+}
+// 메모 아이콘 — 도트 스프라이트 인덱스 (Sprite-0002.png, 6x4=24).
+// 문자열이 아니라 숫자(0..23). 표시는 <SpriteIcon idx={...} /> 로.
+const MEMO_ICONS = Array.from({ length: 24 }, (_, i) => i);
 const randomMemoIcon = () => MEMO_ICONS[Math.floor(Math.random() * MEMO_ICONS.length)];
 
 // ---- 초기 시드 ----
@@ -175,13 +198,17 @@ function seed() {
     selectedDate: t,
     stuck: {},
     timer: {
-      lengthMin: 30,   // 한 사이클 분
+      workMin: 25,
+      breakMin: 5,
+      lengthMin: 25,   // 현재 사이클 분 (집중/휴식)
+      phase: "idle",   // idle | work | break
       enabled: true,
-      cycleStartedAt: null,        // Date.now() — null이면 아직 안 시작
+      cycleStartedAt: null,
       paused: false,
-      pausedRemainingMs: null,     // 일시정지 시 남은 시간 보존
+      pausedRemainingMs: null,
       notificationsGranted: false,
-      lastNotifiedAt: null,        // 알림 중복 발송 방지
+      lastNotifiedAt: null,
+      pomodoroCount: 0,
     },
     workSessions: [],
     songPlays: {},
@@ -199,6 +226,15 @@ function load() {
     data.commands    ??= [];
     data.todos       ??= [];
     data.recurrences ??= [];
+    data.recurrences = data.recurrences.map(r => {
+      const frequency = normalizeFrequency(r.frequency);
+      return {
+        ...r,
+        frequency,
+        weeklyDays: frequency === "weekly" ? normalizeWeeklyDays(r.weeklyDays) : [],
+        active: r.active !== false,
+      };
+    });
     data.lastGenDate ??= today();
     data.prompts     ??= [];
     data.emails      ??= [];
@@ -215,7 +251,8 @@ function load() {
     data.memos       ??= [];
     // 기존 메모를 단일 html 본문으로 통합. body → html, messages → html.
     data.memos = data.memos.map(m => {
-      const next = { ...m, icon: m.icon || randomMemoIcon() };
+      // icon: 숫자 인덱스(0..23). 기존 문자열 이모지는 마이그레이션 시 랜덤 도트로 교체.
+      const next = { ...m, icon: (typeof m.icon === "number" ? m.icon : randomMemoIcon()) };
       if (typeof next.html !== "string") next.html = "";
       if (!next.html && Array.isArray(next.messages) && next.messages.length > 0) {
         next.html = memoMessagesToHtml(next.messages);
@@ -225,7 +262,10 @@ function load() {
       }
       // body는 비워둠 (messages는 보존 — 데이터 보안용으로 일단 남김)
       next.body = "";
-      if (!next.title) next.title = memoTitleFromHtml(next.html);
+      const inferredTitle = memoTitleFromHtml(next.html);
+      if (!next.title) next.title = inferredTitle;
+      next.manualTitle = next.manualTitle ?? (!!String(next.title || "").trim() && next.title !== inferredTitle);
+      next.todoId = next.todoId ?? null;
       return next;
     });
     data.selectedDate = today();   // 시작 시 항상 오늘
@@ -240,18 +280,44 @@ function load() {
       pinned: t.pinned ?? !!t.hot ?? false,
       pinnedAt: t.pinnedAt ?? null,
       dueDate: t.dueDate ?? null,
+      startDate: t.startDate ?? null,
+      endDate: t.endDate ?? null,
       order: t.order ?? i,
       done: !!t.done,
       completedAt: t.completedAt ?? (t.doneTs ? new Date(t.doneTs).toISOString() : (t.doneAt ? t.doneAt + "T12:00:00" : null)),
       recurrenceId: t.recurrenceId ?? null,
+      memoId: t.memoId ?? null,
       trackedSeconds: t.trackedSeconds ?? 0,
+      // 서브태스크 — 접히는 하위 목록. 각 항목은 { id, title, done, completedAt, linkUrl }
+      subTasks: Array.isArray(t.subTasks) ? t.subTasks.map(st => ({
+        id: st.id || uid(),
+        title: String(st.title || "").trim(),
+        done: !!st.done,
+        completedAt: st.completedAt || null,
+        linkUrl: String(st.linkUrl || st.url || "").trim(),
+      })) : [],
       createdAt: t.createdAt ?? today(),
       // 작업방 공개 여부 — 기본 false (비공개). 사용자가 켠 항목만 방 멤버에게 제목 노출.
       roomVisible: !!t.roomVisible,
     }));
-    data.timer       ??= { lengthMin: 30, enabled: true, cycleStartedAt: null, paused: false, pausedRemainingMs: null, notificationsGranted: false, lastNotifiedAt: null };
+    data.timer ??= {
+      workMin: 25, breakMin: 5, lengthMin: 25, phase: "idle",
+      enabled: true, cycleStartedAt: null, paused: false, pausedRemainingMs: null,
+      notificationsGranted: false, lastNotifiedAt: null, pomodoroCount: 0,
+    };
+    data.timer.workMin ??= 25;
+    data.timer.breakMin ??= 5;
+    data.timer.phase ??= (data.timer.cycleStartedAt ? "work" : "idle");
+    data.timer.pomodoroCount ??= 0;
+    if (data.timer.lengthMin == null) data.timer.lengthMin = data.timer.workMin;
     data.workSessions ??= [];
-    data.workSessions = data.workSessions.map(w => ({ lastTs: null, ...w }));
+    // workSessions 레거시 마이그레이션 — projectId 없던 시절 기록은 null(미분류)로 표기.
+    data.workSessions = data.workSessions.map(w => ({
+      lastTs: null,
+      ...w,
+      projectId: w.projectId !== undefined ? w.projectId : null,
+      minutes: w.minutes ?? 0,
+    }));
     data.songPlays   ??= {};
     // 프로젝트에 버전/저장소 필드 보강 (기존 값 우선)
     data.projects = (data.projects ?? []).map(p => ({
@@ -283,7 +349,14 @@ function setState(updater) {
 function getState() { return _state; }
 function subscribe(fn) { _subs.add(fn); return () => _subs.delete(fn); }
 
-// ---- 할 일 ↔ 날짜 매칭 (완료는 completedAt 기준, 미완료는 마감/인박스/연체) ----
+function normalizedTodoPeriod(t) {
+  const a = t.startDate || null;
+  const b = t.endDate || null;
+  if (!a && !b) return null;
+  const start = a || b;
+  const end = b || a;
+  return start <= end ? { start, end } : { start: end, end: start };
+}
 function completionDay(t) {
   if (t.completedAt) return t.completedAt.slice(0, 10);
   if (!t.done) return null;
@@ -293,10 +366,20 @@ function completionDay(t) {
 function matchesTodoDay(t, day, today) {
   const comp = completionDay(t);
   if (t.done) return comp === day;
+  const period = normalizedTodoPeriod(t);
+  if (period && period.start <= day && day <= period.end) return true;
   if (t.dueDate === day) return true;
-  if (day === today && !t.dueDate) return true;
+  if (day === today && !t.dueDate && !period) return true;
   if (day === today && t.dueDate && t.dueDate < today) return true;
   return false;
+}
+
+function pomoCycleMs(timer) {
+  return (timer?.lengthMin ?? 25) * 60 * 1000;
+}
+
+function pomoIdleWorkMs(timer) {
+  return (timer?.workMin ?? 25) * 60 * 1000;
 }
 
 // ---- 액션들 ----
@@ -338,32 +421,47 @@ const actions = {
 
   // ----- 할 일 -----
   addTodo(title, opts = {}) {
-    if (!title?.trim()) return;
+    if (!title?.trim()) return null;
+    const id = uid();
     setState(s => {
       const myTodos = s.todos.filter(t => t.projectId === s.currentProjectId);
       const nextOrder = myTodos.reduce((m, t) => Math.max(m, t.order ?? 0), -1) + 1;
       return {
         ...s,
         todos: [...s.todos, {
-          id: uid(), projectId: s.currentProjectId,
+          id, projectId: s.currentProjectId,
           title: title.trim(),
           pinned: !!opts.pinned, pinnedAt: opts.pinned ? Date.now() : null,
           dueDate: opts.dueDate ?? null,
+          startDate: opts.startDate ?? null,
+          endDate: opts.endDate ?? null,
           order: nextOrder,
           done: false, completedAt: null,
           recurrenceId: opts.recurrenceId ?? null,
+          memoId: opts.memoId ?? null,
           trackedSeconds: 0,
+          subTasks: [],
           createdAt: today(),
           roomVisible: false,
         }],
       };
     });
+    return id;
   },
   toggleTodo(id) {
     setState(s => ({
       ...s,
       todos: s.todos.map(t => t.id === id
         ? { ...t, done: !t.done, completedAt: !t.done ? new Date().toISOString() : null }
+        : t),
+    }));
+  },
+  setTodoDone(id, done) {
+    const nextDone = !!done;
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === id
+        ? { ...t, done: nextDone, completedAt: nextDone ? (t.completedAt || new Date().toISOString()) : null }
         : t),
     }));
   },
@@ -385,8 +483,189 @@ const actions = {
   setTodoDue(id, date) {
     setState(s => ({ ...s, todos: s.todos.map(t => t.id === id ? { ...t, dueDate: date || null } : t) }));
   },
+  setTodoPeriod(id, startDate, endDate) {
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === id ? {
+        ...t,
+        startDate: startDate || null,
+        endDate: endDate || null,
+      } : t),
+    }));
+  },
+  // 달력 드롭으로 단일 날짜 이동 — dueDate 만 설정하고 기간은 비움.
+  moveTodoToDate(id, date) {
+    if (!date) return;
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === id ? {
+        ...t,
+        dueDate: date,
+        startDate: null,
+        endDate: null,
+      } : t),
+    }));
+  },
+  // ----- 서브태스크 -----
+  addSubTask(todoId, title, opts = {}) {
+    const text = (title || "").trim();
+    if (!text) return;
+    const linkUrl = String(opts.linkUrl || "").trim();
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === todoId ? {
+        ...t,
+        subTasks: [...(t.subTasks || []), {
+          id: uid(), title: text, done: false, completedAt: null, linkUrl,
+        }],
+      } : t),
+    }));
+  },
+  toggleSubTask(todoId, subId) {
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === todoId ? {
+        ...t,
+        subTasks: (t.subTasks || []).map(st => st.id === subId ? {
+          ...st,
+          done: !st.done,
+          completedAt: !st.done ? new Date().toISOString() : null,
+        } : st),
+      } : t),
+    }));
+  },
+  setSubTaskDone(todoId, subId, done) {
+    const nextDone = !!done;
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === todoId ? {
+        ...t,
+        subTasks: (t.subTasks || []).map(st => st.id === subId ? {
+          ...st,
+          done: nextDone,
+          completedAt: nextDone ? (st.completedAt || new Date().toISOString()) : null,
+        } : st),
+      } : t),
+    }));
+  },
+  renameSubTask(todoId, subId, title) {
+    const text = (title || "").trim();
+    if (!text) return;
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === todoId ? {
+        ...t,
+        subTasks: (t.subTasks || []).map(st => st.id === subId ? { ...st, title: text } : st),
+      } : t),
+    }));
+  },
+  setSubTaskLink(todoId, subId, linkUrl) {
+    const url = (linkUrl || "").trim();
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === todoId ? {
+        ...t,
+        subTasks: (t.subTasks || []).map(st => st.id === subId ? { ...st, linkUrl: url } : st),
+      } : t),
+    }));
+  },
+  removeSubTask(todoId, subId) {
+    setState(s => ({
+      ...s,
+      todos: s.todos.map(t => t.id === todoId ? {
+        ...t,
+        subTasks: (t.subTasks || []).filter(st => st.id !== subId),
+      } : t),
+    }));
+  },
+  // 끌어서 다른 할 일의 하위로 넣기 — 원본은 top-level 에서 제거.
+  // 한 레벨만 지원하므로, 드래그한 할 일에 서브태스크가 있으면 평탄화해서 흡수.
+  nestAsSubTask(parentId, draggedId) {
+    if (!parentId || !draggedId || parentId === draggedId) return;
+    setState(s => {
+      const dragged = s.todos.find(t => t.id === draggedId);
+      if (!dragged) return s;
+      if (!s.todos.find(t => t.id === parentId)) return s;
+      const newSubs = [
+        {
+          id: uid(),
+          title: dragged.title,
+          done: dragged.done,
+          completedAt: dragged.completedAt || null,
+          linkUrl: dragged.linkUrl || "",
+        },
+        // 드래그한 할 일이 가지고 있던 기존 서브태스크도 같이 흡수
+        ...(dragged.subTasks || []).map(st => ({
+          id: uid(),
+          title: st.title,
+          done: !!st.done,
+          completedAt: st.completedAt || null,
+          linkUrl: st.linkUrl || "",
+        })),
+      ];
+      return {
+        ...s,
+        todos: s.todos
+          .map(t => t.id === parentId
+            ? { ...t, subTasks: [...(t.subTasks || []), ...newSubs] }
+            : t)
+          .filter(t => t.id !== draggedId),
+      };
+    });
+  },
   updateTodo(id, patch) {
     setState(s => ({ ...s, todos: s.todos.map(t => t.id === id ? { ...t, ...patch } : t) }));
+  },
+  addTodoFromSnapshot(todo, opts = {}) {
+    const title = String(todo?.title || "").trim();
+    if (!title) return null;
+    const id = uid();
+    setState(s => {
+      const projectId = opts.projectId ?? s.currentProjectId;
+      const myTodos = s.todos.filter(t => t.projectId === projectId);
+      const nextOrder = myTodos.reduce((m, t) => Math.max(m, t.order ?? 0), -1) + 1;
+      const done = !!todo.done;
+      return {
+        ...s,
+        todos: [...s.todos, {
+          id,
+          projectId,
+          title,
+          pinned: !!todo.pinned,
+          pinnedAt: todo.pinned ? Date.now() : null,
+          dueDate: opts.dueDate ?? todo.dueDate ?? null,
+          startDate: opts.startDate ?? todo.startDate ?? null,
+          endDate: opts.endDate ?? todo.endDate ?? null,
+          order: nextOrder,
+          done,
+          completedAt: done ? (todo.completedAt || new Date().toISOString()) : null,
+          recurrenceId: null,
+          memoId: null,
+          trackedSeconds: todo.trackedSeconds ?? 0,
+          subTasks: Array.isArray(todo.subTasks) ? todo.subTasks.map(st => {
+            const subDone = !!st.done;
+            return {
+              id: uid(),
+              title: String(st.title || "").trim(),
+              done: subDone,
+              completedAt: subDone ? (st.completedAt || new Date().toISOString()) : null,
+              linkUrl: String(st.linkUrl || "").trim(),
+            };
+          }).filter(st => st.title) : [],
+          createdAt: today(),
+          roomVisible: false,
+        }],
+      };
+    });
+    return id;
+  },
+  restoreTodosSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.todos)) return;
+    setState(s => ({
+      ...s,
+      todos: snapshot.todos,
+      recurrences: Array.isArray(snapshot.recurrences) ? snapshot.recurrences : s.recurrences,
+    }));
   },
   reorderTodoBefore(fromId, beforeId) {
     if (fromId === beforeId) return;
@@ -419,24 +698,56 @@ const actions = {
     });
   },
   removeTodo(id) {
-    setState(s => ({ ...s, todos: s.todos.filter(t => t.id !== id) }));
+    setState(s => {
+      const target = s.todos.find(t => t.id === id);
+      if (!target?.recurrenceId) {
+        return {
+          ...s,
+          todos: s.todos.filter(t => t.id !== id),
+          memos: (s.memos ?? []).map(m => m.todoId === id ? { ...m, todoId: null } : m),
+        };
+      }
+      return {
+        ...s,
+        recurrences: (s.recurrences ?? []).filter(r => r.id !== target.recurrenceId),
+        todos: s.todos
+          .filter(t => t.id !== id)
+          .map(t => t.recurrenceId === target.recurrenceId ? { ...t, recurrenceId: null } : t),
+        memos: (s.memos ?? []).map(m => m.todoId === id ? { ...m, todoId: null } : m),
+      };
+    });
   },
 
   // ----- 반복 (템플릿) -----
   addRecurrence({ title, frequency, weeklyDays = [] }) {
     const id = uid();
+    const normalizedFrequency = normalizeFrequency(frequency);
     setState(s => ({
       ...s,
       recurrences: [...(s.recurrences ?? []), {
         id, projectId: s.currentProjectId,
-        title: title.trim(), frequency, weeklyDays, active: true,
+        title: title.trim(),
+        frequency: normalizedFrequency,
+        weeklyDays: normalizedFrequency === "weekly" ? normalizeWeeklyDays(weeklyDays) : [],
+        active: true,
         createdAt: today(),
       }],
     }));
     return id;
   },
   updateRecurrence(id, patch) {
-    setState(s => ({ ...s, recurrences: (s.recurrences ?? []).map(r => r.id === id ? { ...r, ...patch } : r) }));
+    setState(s => ({
+      ...s,
+      recurrences: (s.recurrences ?? []).map(r => {
+        if (r.id !== id) return r;
+        const nextFrequency = normalizeFrequency(patch.frequency ?? r.frequency);
+        const next = { ...r, ...patch, frequency: nextFrequency };
+        return {
+          ...next,
+          weeklyDays: nextFrequency === "weekly" ? normalizeWeeklyDays(next.weeklyDays) : [],
+        };
+      }),
+    }));
   },
   removeRecurrence(id) {
     setState(s => ({
@@ -471,8 +782,9 @@ const actions = {
         newTodos.push({
           id: uid(), projectId: r.projectId,
           title: r.title, pinned: false, pinnedAt: null,
-          dueDate: t, order: orderMap[r.projectId],
+          dueDate: t, startDate: null, endDate: null, order: orderMap[r.projectId],
           done: false, completedAt: null,
+          memoId: null,
           recurrenceId: r.id, trackedSeconds: 0,
           createdAt: t,
         });
@@ -606,20 +918,65 @@ const actions = {
   },
 
   // ----- 메모 (단일 html 본문) -----
-  addMemo({ html = "", icon } = {}) {
+  addMemo({ html = "", icon, todoId = null, title = "" } = {}) {
     const id = uid();
     const now = new Date().toISOString();
     setState(s => ({
       ...s,
       memos: [
         { id, projectId: s.currentProjectId,
-          title: memoTitleFromHtml(html), html,
+          title: title || memoTitleFromHtml(html), html, manualTitle: !!title,
+          todoId,
           icon: icon || randomMemoIcon(),
           createdAt: now, updatedAt: now },
         ...(s.memos ?? []),
       ],
     }));
     return id;
+  },
+  ensureTodoMemo(todoId) {
+    let memoId = null;
+    setState(s => {
+      const todo = s.todos.find(t => t.id === todoId);
+      if (!todo) return s;
+      const memos = s.memos ?? [];
+      const existing = (todo.memoId && memos.find(m => m.id === todo.memoId))
+        || memos.find(m => m.todoId === todoId);
+      if (existing) {
+        memoId = existing.id;
+        const missingSubTasksHtml = todoSubTaskMemoHtml(todo, existing.html || "");
+        const now = new Date().toISOString();
+        return {
+          ...s,
+          todos: s.todos.map(t => t.id === todoId ? { ...t, memoId } : t),
+          memos: memos.map(m => m.id === memoId ? {
+            ...m,
+            todoId,
+            html: missingSubTasksHtml ? `${m.html || ""}${missingSubTasksHtml}` : m.html,
+            updatedAt: missingSubTasksHtml ? now : m.updatedAt,
+          } : m),
+        };
+      }
+      memoId = uid();
+      const now = new Date().toISOString();
+      const memo = {
+        id: memoId,
+        projectId: todo.projectId || s.currentProjectId,
+        todoId,
+        title: todo.title,
+        html: todoMemoHtml(todo),
+        manualTitle: true,
+        icon: 4,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return {
+        ...s,
+        todos: s.todos.map(t => t.id === todoId ? { ...t, memoId } : t),
+        memos: [memo, ...memos],
+      };
+    });
+    return memoId;
   },
   updateMemo(id, patch) {
     setState(s => ({
@@ -629,13 +986,18 @@ const actions = {
         const touchesContent = "html" in patch || "title" in patch;
         const next = { ...m, ...patch };
         if (touchesContent) next.updatedAt = new Date().toISOString();
-        if (!("title" in patch) && "html" in patch) next.title = memoTitleFromHtml(next.html);
+        if ("title" in patch) next.manualTitle = true;
+        if (!next.manualTitle && !("title" in patch) && "html" in patch) next.title = memoTitleFromHtml(next.html);
         return next;
       }),
     }));
   },
   removeMemo(id) {
-    setState(s => ({ ...s, memos: (s.memos ?? []).filter(m => m.id !== id) }));
+    setState(s => ({
+      ...s,
+      memos: (s.memos ?? []).filter(m => m.id !== id),
+      todos: (s.todos ?? []).map(t => t.memoId === id ? { ...t, memoId: null } : t),
+    }));
   },
 
   // ----- 회고 (날짜별 1개) -----
@@ -762,7 +1124,7 @@ const actions = {
   pauseCycle() {
     setState(s => {
       if (!s.timer.cycleStartedAt || s.timer.paused) return s;
-      const lenMs = s.timer.lengthMin * 60 * 1000;
+      const lenMs = pomoCycleMs(s.timer);
       const elapsed = Date.now() - s.timer.cycleStartedAt;
       const remaining = Math.max(0, lenMs - elapsed);
       return { ...s, timer: { ...s.timer, paused: true, pausedRemainingMs: remaining } };
@@ -771,7 +1133,7 @@ const actions = {
   resumeCycle() {
     setState(s => {
       if (!s.timer.paused) return s;
-      const lenMs = s.timer.lengthMin * 60 * 1000;
+      const lenMs = pomoCycleMs(s.timer);
       const remaining = s.timer.pausedRemainingMs ?? lenMs;
       // 남은 시간이 이제부터 흐르도록 시작 시각을 보정
       const cycleStartedAt = Date.now() - (lenMs - remaining);
@@ -788,6 +1150,57 @@ const actions = {
       lastNotifiedAt: null,
     }}));
   },
+  startPomodoro() {
+    setState(s => ({ ...s, timer: {
+      ...s.timer,
+      phase: "work",
+      lengthMin: s.timer.workMin ?? 25,
+      cycleStartedAt: Date.now(),
+      paused: false,
+      pausedRemainingMs: null,
+      lastNotifiedAt: null,
+    }}));
+  },
+  stopPomodoro() {
+    setState(s => ({ ...s, timer: {
+      ...s.timer,
+      phase: "idle",
+      lengthMin: s.timer.workMin ?? 25,
+      cycleStartedAt: null,
+      paused: false,
+      pausedRemainingMs: null,
+      lastNotifiedAt: null,
+    }}));
+  },
+  advancePomodoroPhase() {
+    setState(s => {
+      const t = s.timer;
+      if (t.phase === "work") {
+        return { ...s, timer: {
+          ...t,
+          phase: "break",
+          lengthMin: t.breakMin ?? 5,
+          cycleStartedAt: Date.now(),
+          paused: false,
+          pausedRemainingMs: null,
+          lastNotifiedAt: null,
+          pomodoroCount: (t.pomodoroCount ?? 0) + 1,
+        }};
+      }
+      if (t.phase === "break") {
+        return { ...s, timer: {
+          ...t,
+          phase: "idle",
+          lengthMin: t.workMin ?? 25,
+          cycleStartedAt: null,
+          paused: false,
+          pausedRemainingMs: null,
+          lastNotifiedAt: null,
+        }};
+      }
+      return s;
+    });
+  },
   markNotified() {
     setState(s => ({ ...s, timer: { ...s.timer, lastNotifiedAt: Date.now() } }));
   },
@@ -795,21 +1208,41 @@ const actions = {
     setState(s => ({ ...s, timer: { ...s.timer, notificationsGranted: g } }));
   },
 
-  // ----- 작업 시간 트래킹 -----
-  addWorkMinutes(min) {
+  // ----- 작업 시간 트래킹 (날짜 × 프로젝트) -----
+  // 현재 활성 프로젝트로 분류해서 누적. projectId 명시도 가능.
+  addWorkMinutes(min, projectId) {
     if (min <= 0) return;
     const t = today();
     const now = Date.now();
     setState(s => {
+      const pid = projectId !== undefined ? projectId : (s.currentProjectId ?? null);
       const sessions = s.workSessions.slice();
-      const idx = sessions.findIndex(w => w.date === t);
+      const idx = sessions.findIndex(w => w.date === t && w.projectId === pid);
       if (idx >= 0) {
         sessions[idx] = { ...sessions[idx], minutes: sessions[idx].minutes + min, lastTs: now };
       } else {
-        sessions.push({ date: t, minutes: min, lastTs: now });
+        sessions.push({ date: t, projectId: pid, minutes: min, lastTs: now });
       }
       return { ...s, workSessions: sessions };
     });
+  },
+  // 작업 시간 초기화. ActivityTracker가 누적 중이던 초도 같이 비우라고 이벤트 발사.
+  //   resetWorkMinutes()                       → 오늘 모든 프로젝트
+  //   resetWorkMinutes(date)                   → 그 날짜 모든 프로젝트
+  //   resetWorkMinutes(date, projectId)        → 그 날짜의 특정 프로젝트만
+  resetWorkMinutes(date, projectId) {
+    const d = date || today();
+    setState(s => ({
+      ...s,
+      workSessions: s.workSessions.filter(w => {
+        if (w.date !== d) return true;
+        if (projectId !== undefined) return w.projectId !== projectId;
+        return false;
+      }),
+    }));
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("work-minutes-reset", { detail: { date: d, projectId } }));
+    }
   },
 
   // ----- 곡 재생 카운트 (날짜·videoId 별) -----
@@ -827,9 +1260,10 @@ const actions = {
   },
 
   // ----- 위험: 리셋 -----
-  hardReset() {
-    const msg = (window.i18n && window.i18n.t) ? window.i18n.t("set.resetConfirm") : "정말 모든 데이터를 지우고 초기 시드로 되돌릴까요?";
-    if (!confirm(msg)) return;
+  async hardReset() {
+    const msg = (window.i18n && window.i18n.t) ? window.i18n.t("set.resetConfirm") : "정말 모든 데이터를 지우고 초기 상태로 되돌릴까요?";
+    const ok = await (window.dialog ? window.dialog.confirm(msg) : Promise.resolve(confirm(msg)));
+    if (!ok) return;
     setState(seed());
   },
 };
@@ -855,8 +1289,32 @@ const select = {
   stuckForCurrent: (s) => s.stuck[s.currentProjectId] ?? "",
   workMinutesToday: (s) => {
     const t = today();
-    const sess = s.workSessions.find(w => w.date === t);
-    return sess?.minutes ?? 0;
+    return (s.workSessions ?? []).reduce(
+      (sum, w) => w.date === t ? sum + (w.minutes || 0) : sum, 0
+    );
+  },
+  // 특정 날짜의 총 작업시간
+  workMinutesForDate: (s, date) => {
+    return (s.workSessions ?? []).reduce(
+      (sum, w) => w.date === date ? sum + (w.minutes || 0) : sum, 0
+    );
+  },
+  // 특정 날짜의 프로젝트별 작업시간 — [{ projectId, project, minutes }] 분 내림차순
+  workByProjectForDate: (s, date) => {
+    const map = new Map();
+    (s.workSessions ?? []).forEach(w => {
+      if (w.date !== date) return;
+      map.set(w.projectId ?? null, (map.get(w.projectId ?? null) ?? 0) + (w.minutes || 0));
+    });
+    const projects = s.projects ?? [];
+    return [...map.entries()]
+      .map(([pid, mins]) => ({
+        projectId: pid,
+        project: projects.find(p => p.id === pid) ?? null,
+        minutes: mins,
+      }))
+      .filter(x => x.minutes > 0)
+      .sort((a, b) => b.minutes - a.minutes);
   },
   // 하루 단위 통합 — 그 날의 할 일(마감 + 그 날 완료) / 작업분 / 회고 / 톱 곡
   dayBundle: (s, date) => {
@@ -889,4 +1347,7 @@ const select = {
 };
 
 // 글로벌 노출
-window.diary = { useDiary, actions, select, today, fmtKDate, fmtKDateShort, getState, memoTitleFromHtml, MEMO_ICONS, matchesTodoDay, completionDay };
+window.diary = {
+  useDiary, actions, select, today, fmtKDate, fmtKDateShort, getState, memoTitleFromHtml, MEMO_ICONS,
+  pomoCycleMs, pomoIdleWorkMs, matchesTodoDay, completionDay,
+};

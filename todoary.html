@@ -59,6 +59,8 @@
 
   <!-- 작업방 (Firebase) — config 없으면 자동 로컬 모드 -->
   <script src="vendor/firebase-config.js"></script>
+  <!-- 익명 활성 사용자 집계 (작업방과 분리) -->
+  <script type="text/babel" src="v2/analytics.jsx"></script>
 
   <script type="text/babel" src="tweaks-panel.jsx"></script>
   <script type="text/babel" src="v2/i18n.jsx"></script>
@@ -115,6 +117,7 @@
       "showFakeIde": true,
       "desktopMode": false,
       "alwaysOnTop": false,
+      "showPomodoro": false,
       "dockHidden": false,
       "tabsHidden": false
     }/*EDITMODE-END*/;
@@ -208,6 +211,11 @@
         try { diary.actions.generateRecurrences(); } catch (_) {}
         const id = setInterval(() => { try { diary.actions.generateRecurrences(); } catch (_) {} }, 60 * 1000);
         return () => clearInterval(id);
+      }, []);
+
+      // 익명 활성 사용자 집계 — 앱 실행 시 1회 (주기 전송 없음)
+      React.useEffect(() => {
+        try { window.todoaryAnalytics && window.todoaryAnalytics.trackAppLaunch(); } catch (_) {}
       }, []);
 
       // 항상 위 — tweak 변경 시 Tauri 창 옵션에 반영

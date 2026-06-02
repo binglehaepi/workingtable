@@ -1,8 +1,48 @@
-/* global React, diary */
+/* global React, diary, L, useI18n */
 // ===========================================================
 // 공통 컴포넌트 — 모든 뷰에서 재사용
 // ===========================================================
 const { useState, useRef, useEffect } = React;
+
+if (typeof window !== "undefined") {
+  const existingDialog = window.dialog || {};
+  window.dialog = {
+    ...existingDialog,
+    alert: existingDialog.alert || (async (message) => window.alert(message)),
+    confirm: existingDialog.confirm || (async (message) => window.confirm(message)),
+    prompt: existingDialog.prompt || (async (message, defaultValue = "") => window.prompt(message, defaultValue ?? "")),
+  };
+}
+
+// ---- 도트 스프라이트 아이콘 (16x16 셀, 6x4 = 24 인덱스) ----
+// Sprite-0002.png (96x64) 한 장에서 인덱스로 잘라 표시한다.
+// 표시 크기는 size 로 조절 (배수 — 16/24/32/48 ...).
+const SPRITE_COLS = 6;
+const SPRITE_ROWS = 4;
+const SPRITE_CELL = 16;
+function SpriteIcon({ idx = 0, size = 16, title, style }) {
+  const col = idx % SPRITE_COLS;
+  const row = Math.floor(idx / SPRITE_COLS);
+  const scale = size / SPRITE_CELL;
+  return (
+    <span
+      className="sprite-icon"
+      title={title}
+      style={{
+        width: size,
+        height: size,
+        backgroundSize: `${SPRITE_COLS * size}px ${SPRITE_ROWS * size}px`,
+        backgroundPosition: `${-col * size}px ${-row * size}px`,
+        ...style,
+      }}
+    />
+  );
+}
+// 메모 픽커용 인덱스 모음 — store.jsx 에서 채워 넣음. 기본은 0..23 전체.
+const MEMO_SPRITE_IDXS = Array.from({ length: SPRITE_COLS * SPRITE_ROWS }, (_, i) => i);
+// 전역 노출
+window.SpriteIcon = SpriteIcon;
+window.MEMO_SPRITE_IDXS = MEMO_SPRITE_IDXS;
 
 function ViewHeader({ ttl, sub, action }) {
   return (
@@ -21,13 +61,48 @@ function Divider() {
 }
 
 // 본문을 가운데 선으로 위/아래 반반 나누는 레이아웃
-function SplitPane({ topLabel, topRight, top, bottomLabel, bottomRight, bottom, bottomScroll = true }) {
+function SplitPane({
+  topLabel, topRight, top,
+  middle,
+  bottomLabel, bottomRight, bottom,
+  bottomScroll = true,
+  bottomHeight,            // number → 리사이즈 모드 (고정 높이). undefined → 기본 flex 2:1.
+  onBottomHeightChange,    // (rawHeightPx) => void  ※ 스냅은 호출자가 처리
+}) {
+  const isResizable = typeof bottomHeight === "number" && typeof onBottomHeightChange === "function";
   const sec = { minHeight: 0, overflowX: "hidden" };
   const head = { display: "flex", alignItems: "center", gap: 6, marginBottom: 8 };
+
+  const onDragStart = (e) => {
+    if (!isResizable) return;
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = bottomHeight;
+    const onMove = (ev) => {
+      const delta = startY - ev.clientY;  // 위로 끌면 +, 아래로 끌면 −
+      onBottomHeightChange(startH + delta);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* 위 2/3 */}
-      <div style={{ ...sec, overflowY: "auto", flex: 2, padding: "12px 14px 10px" }}>
+      {/* 위 — 리사이즈 모드일 땐 남은 공간 전부 차지 */}
+      <div style={{
+        ...sec, overflowY: "auto",
+        flex: isResizable ? 1 : 2,
+        padding: "12px 14px 10px",
+      }}>
         {(topLabel || topRight) && (
           <div style={head}>
             <div className="sk-label" style={{ flex: 1 }}>{topLabel}</div>
@@ -36,10 +111,29 @@ function SplitPane({ topLabel, topRight, top, bottomLabel, bottomRight, bottom, 
         )}
         {top}
       </div>
-      {/* 가운데 선 (장식) — 배경 그라데이션은 위/아래 연속 */}
-      <div style={{ borderTop: "1.6px solid var(--ink)", flexShrink: 0 }} />
-      {/* 아래 1/3 */}
-      <div style={{ ...sec, overflowY: bottomScroll ? "auto" : "hidden", flex: 1, padding: "10px 14px 12px" }}>
+      {/* 가운데 — 옵션 슬롯(예: 진행도 바) */}
+      {middle && <div style={{ flexShrink: 0 }}>{middle}</div>}
+      {/* 구분선 / 리사이즈 핸들 */}
+      <div
+        onMouseDown={onDragStart}
+        style={{
+          flexShrink: 0,
+          borderTop: "1.6px solid var(--ink)",
+          height: isResizable ? 6 : 0,
+          cursor: isResizable ? "ns-resize" : "default",
+          background: "transparent",
+          userSelect: "none",
+        }}
+        title={isResizable ? "끌어서 달력 크기 조절 (1주 단위)" : undefined}
+      />
+      {/* 아래 — 리사이즈 모드면 고정 높이 */}
+      <div style={{
+        ...sec,
+        overflowY: bottomScroll ? "auto" : "hidden",
+        flex: isResizable ? "none" : 1,
+        height: isResizable ? bottomHeight : undefined,
+        padding: "10px 14px 12px",
+      }}>
         {(bottomLabel || bottomRight) && (
           <div style={head}>
             <div className="sk-label" style={{ flex: 1 }}>{bottomLabel}</div>
@@ -145,8 +239,9 @@ function Editable({ value, onChange, placeholder = "", multiline = false, style 
 
 // 삭제 버튼 (작은 ×)
 function DelBtn({ onClick }) {
+  if (typeof useI18n === "function") useI18n();
   return (
-    <button onClick={onClick} title="삭제" style={{
+    <button onClick={onClick} title={L("common.delete")} style={{
       all: "unset", cursor: "pointer",
       width: 16, height: 16, borderRadius: "50%",
       display: "grid", placeItems: "center",
@@ -248,23 +343,22 @@ function ProjectSwitcher() {
   const project = diary.select.currentProject(state);
   const [open, setOpen] = useState(false);
 
-  function addNew() {
-    const name = prompt(L("proj.newPrompt"));
+  async function addNew() {
+    setOpen(false);
+    const name = await window.dialog.prompt(L("proj.newPrompt"));
     if (name?.trim()) actions.addProject({ name: name.trim() });
-    setOpen(false);
   }
-  function rename() {
+  async function rename() {
     if (!project) return;
-    const name = prompt(L("proj.renamePrompt"), project.name);
+    setOpen(false);
+    const name = await window.dialog.prompt(L("proj.renamePrompt"), project.name);
     if (name?.trim()) actions.updateProject(project.id, { name: name.trim() });
-    setOpen(false);
   }
-  function removeCurrent() {
+  async function removeCurrent() {
     if (!project) return;
-    if (confirm(L("proj.deleteConfirm", { name: project.name }))) {
-      actions.removeProject(project.id);
-    }
     setOpen(false);
+    const ok = await window.dialog.confirm(L("proj.deleteConfirm", { name: project.name }));
+    if (ok) actions.removeProject(project.id);
   }
 
   return (
@@ -324,20 +418,20 @@ function RepoButtons() {
   const project = diary.select.currentProject(state);
   if (!project) return null;
 
-  function openGit() {
+  async function openGit() {
     let url = project.repoUrl;
     if (!url) {
-      url = prompt("git 저장소 주소 (예: https://github.com/me/repo)") || "";
+      url = (await window.dialog.prompt("git 저장소 주소 (예: https://github.com/me/repo)")) || "";
       if (!url.trim()) return;
       actions.updateProject(project.id, { repoUrl: url.trim() });
       url = url.trim();
     }
     openExternalUrl(url);
   }
-  function openFolder() {
+  async function openFolder() {
     let p = project.path;
     if (!p) {
-      p = prompt("프로젝트 폴더 경로 (예: C:\\work\\my-repo)") || "";
+      p = (await window.dialog.prompt("프로젝트 폴더 경로 (예: C:\\\\work\\\\my-repo")) || "";
       if (!p.trim()) return;
       actions.updateProject(project.id, { path: p.trim() });
       p = p.trim();

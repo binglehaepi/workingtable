@@ -14,76 +14,77 @@
 
 const { useState, useEffect, useRef } = React;
 
-const IDLE_MS = 5 * 60 * 1000;   // 5분 무입력 = 유휴
-const TICK_MS = 10 * 1000;       // 체크 간격
+const TICK_MS = 1000;            // 1초 단위로 체크 — 미니 위젯의 HH:MM:SS 실시간 표시용
 const TICK_SEC = TICK_MS / 1000;
 
-// ---- 외부 작업 모드 (module-level) ----
-// 사용자가 클튜/포토샵 등 다른 앱에서 일할 때 켜는 모드.
-// 켜져있으면 ActivityTracker가 visible/focused/idle 체크를 무시하고 무조건 카운트.
-// 안전상 새 세션마다 OFF로 시작 (영구 저장 안 함).
+// 모듈 레벨 pendingSec — 미니 위젯 등 외부에서 읽을 수 있게.
+// store의 workMinutesToday(분 단위 커밋분) + 이 pendingSec(아직 안 커밋된 초)를 합치면
+// 진짜 초 단위 작업 시간이 나옴. ActivityTracker가 매 초 갱신.
+let _pendingSec = 0;
+window.workActivity = {
+  getPendingSec() { return _pendingSec; },
+  subscribe(fn) {
+    const h = () => fn(_pendingSec);
+    window.addEventListener("work-tick", h);
+    return () => window.removeEventListener("work-tick", h);
+  },
+};
+
+// ---- 워크 트래커 (module-level) ----
+// 기본 ON — 앱이 실행되어 있기만 하면 무조건 카운트 (외부 환경 기준).
+// 사용자가 점을 클릭하면 STOP — 다시 클릭하면 재개.
+// (이전엔 visible/focused/idle 체크가 있었으나, 사용자 요청으로 항상 카운트로 단순화.)
 (function () {
-  let externalMode = false;
-  let startedAt = null;
+  let running = true;  // 앱 시작 시 기본 ON
   const subs = new Set();
   window.workTracker = {
-    isExternal() { return externalMode; },
-    startedAt() { return startedAt; },
-    setExternal(on) {
+    isRunning() { return running; },
+    // 방 동기화 코드의 기존 "외부 모드" API와 호환: 현재 단순화된 트래커에서는 running 상태가 곧 외부 작업 상태다.
+    isExternal() { return running; },
+    setRunning(on) {
       const next = !!on;
-      if (next === externalMode) return;
-      externalMode = next;
-      startedAt = next ? Date.now() : null;
-      for (const fn of subs) fn(externalMode);
+      if (next === running) return;
+      running = next;
+      for (const fn of subs) fn(running);
     },
-    toggle() { this.setExternal(!externalMode); },
+    toggle() { this.setRunning(!running); },
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
   };
 })();
 
 // ---- 트래커 ----
+// running 일 때 매 초 카운트. STOP 이면 카운트 중지.
 function ActivityTracker() {
   const { actions } = diary.useDiary();
-  const lastActivityRef = useRef(Date.now());
   const pendingSecRef = useRef(0);
 
   useEffect(() => {
-    const bump = () => { lastActivityRef.current = Date.now(); };
-    window.addEventListener("mousemove", bump);
-    window.addEventListener("keydown", bump);
-    window.addEventListener("mousedown", bump);
-    window.addEventListener("focus", bump);
-    return () => {
-      window.removeEventListener("mousemove", bump);
-      window.removeEventListener("keydown", bump);
-      window.removeEventListener("mousedown", bump);
-      window.removeEventListener("focus", bump);
+    const onReset = () => {
+      pendingSecRef.current = 0;
+      _pendingSec = 0;
+      window.dispatchEvent(new CustomEvent("work-tick"));
     };
+    window.addEventListener("work-minutes-reset", onReset);
+    return () => window.removeEventListener("work-minutes-reset", onReset);
   }, []);
 
   useEffect(() => {
     const id = setInterval(() => {
-      const external = window.workTracker && window.workTracker.isExternal();
-      let active;
-      if (external) {
-        active = true; // 외부 작업 모드 — 무조건 카운트
-      } else {
-        const now = Date.now();
-        const idle = now - lastActivityRef.current > IDLE_MS;
-        const visible = document.visibilityState === "visible";
-        const focused = document.hasFocus();
-        active = visible && focused && !idle;
-      }
-      if (!active) return;
+      if (!(window.workTracker && window.workTracker.isRunning())) return;
 
       pendingSecRef.current += TICK_SEC;
+      _pendingSec = pendingSecRef.current;
 
       // 60초 누적되면 store에 commit
       if (pendingSecRef.current >= 60) {
         const m = Math.floor(pendingSecRef.current / 60);
         pendingSecRef.current = pendingSecRef.current % 60;
+        _pendingSec = pendingSecRef.current;
         actions.addWorkMinutes(m);
       }
+
+      // 미니 위젯 등 구독자에게 알림 — 매 초 (running 일 때만)
+      window.dispatchEvent(new CustomEvent("work-tick"));
     }, TICK_MS);
     return () => clearInterval(id);
   }, []);

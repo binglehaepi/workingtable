@@ -452,3 +452,18 @@ html[data-desktop-mode="true"] .dock-body {
   letter-spacing: 0.02em;
   border: var(--bw) solid var(--ink);
 }
+
+
+/* ===== 도트 스프라이트 아이콘 ===== */
+/* 96x64 PNG = 6열 x 4행, 셀당 16x16. 인덱스 [0..23] */
+.sprite-icon {
+  display: inline-block;
+  background-image: url("asset/Sprite-0002.png");
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  -ms-interpolation-mode: nearest-neighbor;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+/* 셀 위치는 인라인 style 로 background-position / background-size 지정 */

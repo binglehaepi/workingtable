@@ -15,7 +15,7 @@ function fmtClock(ts) {
   const d = new Date(ts);
   const h = d.getHours();
   const m = pad2(d.getMinutes());
-  const ampm = h < 12 ? "오전" : "오후";
+  const ampm = h < 12 ? L("time.am") : L("time.pm");
   const h12 = ((h + 11) % 12) + 1;
   return `${ampm} ${h12}:${m}`;
 }
@@ -31,6 +31,21 @@ function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate() + n)
 function parseDate(iso) {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y, m - 1, d);
+}
+function normalizedTodoPeriod(t) {
+  const a = t.startDate || null;
+  const b = t.endDate || null;
+  if (!a && !b) return null;
+  const start = a || b;
+  const end = b || a;
+  return start <= end ? { start, end } : { start: end, end: start };
+}
+function eachIsoDate(start, end, fn) {
+  let d = start;
+  for (let i = 0; i < 370 && d <= end; i += 1) {
+    fn(d);
+    d = dateOnly(addDays(parseDate(d), 1));
+  }
 }
 function fmtSecondsHMS(totalSec) {
   const s = Math.max(0, Math.floor(totalSec || 0));
@@ -178,8 +193,14 @@ function WeekPane({ onPickDay }) {
       else dueByDay[d].push(t);
     });
   });
+  // 날짜별 — 현재 프로젝트의 작업시간만 표시. 다른 프로젝트나 미분류는 숨김.
   const workByDay = {};
-  (state.workSessions ?? []).forEach(w => { if (dayStrings.includes(w.date)) workByDay[w.date] = w.minutes; });
+  const curPid = state.currentProjectId;
+  (state.workSessions ?? []).forEach(w => {
+    if (w.projectId !== curPid) return;
+    if (!dayStrings.includes(w.date)) return;
+    workByDay[w.date] = (workByDay[w.date] || 0) + (w.minutes || 0);
+  });
   const retroByDay = {};
   (state.retros ?? []).forEach(r => { if (dayStrings.includes(r.date)) retroByDay[r.date] = r; });
 
@@ -239,7 +260,7 @@ function WeekPane({ onPickDay }) {
             hasRetro={!!retroByDay[dayStrings[i]]}
             mood={retroByDay[dayStrings[i]]?.mood || null}
             ddayLabel={dday.date === dayStrings[i] ? dDayLabel(dday.date, today) : null}
-            ddayName={dday.date === dayStrings[i] ? (dday.label || "디데이") : null}
+            ddayName={dday.date === dayStrings[i] ? (dday.label || L("dday.label")) : null}
             isToday={dayStrings[i] === todayStr}
             isFuture={dayStrings[i] > todayStr}
             onClick={() => onPickDay(dayStrings[i])}
@@ -316,22 +337,35 @@ function DayCell({ date, labelKey, due, doneFloat, workMin, hasRetro, mood,
             fontFamily: "var(--mono)", fontSize: 8.5, color: "var(--ink)",
             background: "var(--point)", padding: "0 5px", borderRadius: 99,
             border: "1px solid var(--ink)",
-          }}>오늘</span>
+          }}>{L("planner.today")}</span>
         )}
-        {ddayLabel && (
-          <span title={ddayName} style={{
-            fontFamily: "var(--mono)", fontSize: 8.5, color: "var(--ink)",
-            background: "#ffd0d8", padding: "0 5px", borderRadius: 99,
-            border: "1px solid var(--ink)",
-          }}>★{ddayLabel}</span>
-        )}
-        {hasRetro && (
-          <span title="일기 있음" style={{
-            marginLeft: "auto",
-            width: 6, height: 6, borderRadius: "50%",
-            background: "var(--pink)", border: "1px solid var(--ink)",
-            flexShrink: 0,
-          }} />
+        {(ddayLabel || hasRetro) && (
+          <span style={{
+            marginLeft: "auto", display: "inline-flex", alignItems: "center",
+            gap: 3, flexWrap: "wrap", justifyContent: "flex-end",
+          }}>
+            {ddayLabel && (
+              <span title={ddayName === "디데이" ? L("dday.label") : ddayName} style={{
+                fontFamily: "var(--mono)", fontSize: 8.5, color: "var(--ink)",
+                background: "#ffd0d8", padding: "0 5px", borderRadius: 99,
+                border: "1px solid var(--ink)",
+              }}>★{ddayLabel}</span>
+            )}
+            {hasRetro && (
+              <span title={L("planner.diaryExists")} style={{
+                display: "inline-flex", alignItems: "center", gap: 2,
+                fontFamily: "var(--hand)", fontSize: 8.5, fontWeight: 700, color: "var(--ink)",
+                background: "linear-gradient(180deg, #fff0f6 0%, #ffd6e8 100%)",
+                padding: "1px 6px 1px 4px", borderRadius: 99,
+                border: "1px solid var(--ink)",
+                flexShrink: 0,
+                boxShadow: "0 1px 0 var(--paper-3)",
+              }}>
+                <span style={{ fontSize: 9, lineHeight: 1 }}>📔</span>
+                <span>{L("planner.diaryShort")}</span>
+              </span>
+            )}
+          </span>
         )}
       </div>
 
@@ -351,6 +385,7 @@ function DayCell({ date, labelKey, due, doneFloat, workMin, hasRetro, mood,
       </div>
 
       {/* 좌하단 — 작업시간 */}
+      {/* 작업시간 푸터 — 현재 프로젝트만 (다른 프로젝트나 미분류는 숨김) */}
       {!!workMin && (
         <div style={{
           position: "absolute", left: 8, bottom: 4,
@@ -404,6 +439,8 @@ function TodoMiniLine({ t, onToggle }) {
 function WeekNotesCell({ mondayStr, notes, onChange }) {
   const [local, setLocal] = useState(notes);
   const lastSentRef = useRef(notes);
+  const LH = 22;
+  const rules = `repeating-linear-gradient(to bottom, transparent 0, transparent ${LH - 1}px, rgba(40,51,63,0.22) ${LH - 1}px, rgba(40,51,63,0.22) ${LH}px)`;
   // 주가 바뀌면 새 값으로 동기화
   useEffect(() => { setLocal(notes); lastSentRef.current = notes; }, [mondayStr, notes]);
   // 디바운스 저장
@@ -421,7 +458,8 @@ function WeekNotesCell({ mondayStr, notes, onChange }) {
     <div onClick={(e) => e.stopPropagation()} style={{
       padding: "6px 8px 8px",
       display: "flex", flexDirection: "column", minHeight: 0,
-      background: "color-mix(in srgb, var(--chrome,#a9cdf5) 14%, white)",
+      background: "rgba(255,255,255,0.16)",
+      position: "relative",
     }}>
       <div style={{
         fontFamily: "var(--hand)", fontSize: 12.5, fontWeight: 700,
@@ -436,9 +474,11 @@ function WeekNotesCell({ mondayStr, notes, onChange }) {
         style={{
           flex: 1, minHeight: 0, marginTop: 4,
           border: 0, outline: "none", resize: "none",
-          background: "transparent",
-          fontFamily: "var(--hand)", fontSize: 11.5, lineHeight: 1.4,
-          color: "var(--ink)", padding: 0,
+          background: rules,
+          backgroundAttachment: "local",
+          fontFamily: "var(--hand)", fontSize: 12.5, lineHeight: `${LH}px`,
+          color: "var(--ink)", padding: "2px 4px",
+          borderRadius: 6,
         }}
       />
     </div>
@@ -457,9 +497,9 @@ function WeekStatsFooter({ weekTotalMin, weekDoneCnt, streak }) {
       background: "linear-gradient(180deg, color-mix(in srgb, var(--chrome,#a9cdf5) 40%, white) 0%, color-mix(in srgb, var(--chrome,#a9cdf5) 14%, white) 100%)",
       display: "flex", alignItems: "center", gap: 5,
     }}>
-      <StatChip label="작업" value={totalLabel} accent="#9ef0c4" />
-      <StatChip label="완료" value={`${weekDoneCnt}`} accent="#a9cdf5" />
-      <StatChip label="연속" value={`${streak}일`} accent="#ffc7d4" />
+      <StatChip label={L("planner.work")} value={totalLabel} accent="#9ef0c4" />
+      <StatChip label={L("planner.doneShort")} value={`${weekDoneCnt}`} accent="#a9cdf5" />
+      <StatChip label={L("planner.streak")} value={L("planner.days", { n: streak })} accent="#ffc7d4" />
     </div>
   );
 }
@@ -496,7 +536,7 @@ function DayPane({ date, onBack, onJump }) {
   const bundle = diary.select.dayBundle(state, date);
   const isToday = date === diary.today();
   const dDateObj = parseDate(date);
-  const dow = ["일","월","화","수","목","금","토"][dDateObj.getDay()];
+  const dow = ((window.i18n && window.i18n.weekdays && window.i18n.weekdays()) || ["일","월","화","수","목","금","토"])[dDateObj.getDay()];
 
   // 일기 본문 — 자동 저장 (디바운스)
   const [text, setText] = useState(bundle.retro?.text ?? "");
@@ -542,59 +582,34 @@ function DayPane({ date, onBack, onJump }) {
         background: "linear-gradient(180deg, color-mix(in srgb, var(--chrome,#a9cdf5) 42%, white) 0%, color-mix(in srgb, var(--chrome,#a9cdf5) 12%, white) 100%)",
         borderBottom: "1.1px solid var(--ink)",
       }}>
-        <button onClick={onBack} title="주간으로" style={{
+        <button onClick={onBack} title={L("planner.backWeek")} style={{
           ...gradNavBtn, width: "auto", padding: "0 9px", fontSize: 11,
           fontFamily: "var(--hand)", fontWeight: 700,
-        }}>‹ 주간</button>
+        }}>‹ {L("tab.week")}</button>
         <span style={{ flex: 1 }} />
-        <button onClick={goPrevDay} title="이전 날" style={gradNavBtn}>‹</button>
+        <button onClick={goPrevDay} title={L("planner.prevDay")} style={gradNavBtn}>‹</button>
         <div style={{
           padding: "0 8px",
           fontFamily: "var(--hand)", fontSize: 14, fontWeight: 700, color: "var(--ink)",
           whiteSpace: "nowrap",
         }}>
-          {dDateObj.getMonth() + 1}월 {dDateObj.getDate()}일 ({dow})
+          {window.i18n && window.i18n.fmtDate ? window.i18n.fmtDate(date) : `${dDateObj.getMonth() + 1}/${dDateObj.getDate()} (${dow})`}
           {isToday && <span style={{
             marginLeft: 5, fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink)",
             background: "var(--point)", padding: "0 5px", borderRadius: 99,
             border: "1px solid var(--ink)", verticalAlign: "middle",
-          }}>오늘</span>}
+          }}>{L("planner.today")}</span>}
         </div>
-        <button onClick={goNextDay} title="다음 날" style={gradNavBtn}>›</button>
+        <button onClick={goNextDay} title={L("planner.nextDay")} style={gradNavBtn}>›</button>
         <span style={{ flex: 1 }} />
       </div>
 
-      {/* 본문 — 스크롤 */}
+      {/* 본문 — 일기창 하나로 통합 */}
       <div style={{
         flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden",
-        padding: "10px 12px 14px",
-        display: "flex", flexDirection: "column", gap: 10,
+        padding: "8px 10px 12px",
+        display: "flex", flexDirection: "column",
       }}>
-        {/* 끝낸 일 */}
-        <Section
-          title="끝낸 일"
-          badge={`${bundle.doneCount} / ${bundle.totalCount}`}
-        >
-          {bundle.items.length === 0 ? (
-            <Empty text="이 날 할 일이 없었어요" />
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {bundle.items.map(t => (
-                <TodoLine key={t.id} t={t} onToggle={() => actions.toggleTodo(t.id)} />
-              ))}
-            </div>
-          )}
-        </Section>
-
-        {/* 작업시간 + 가장 많이 들은 곡 — 레트로 타이머 카드 */}
-        <TimerCard
-          totalSec={totalSec}
-          workMinutes={bundle.workMinutes}
-          topSong={bundle.topSong}
-          isToday={isToday}
-        />
-
-        {/* 오늘의 기록 — 일기장 노트 스타일 */}
         <Notebook
           date={date}
           dateObj={dDateObj}
@@ -605,6 +620,12 @@ function DayPane({ date, onBack, onJump }) {
           text={text}
           onTextChange={onTextChange}
           isToday={isToday}
+          items={bundle.items}
+          doneCount={bundle.doneCount}
+          totalCount={bundle.totalCount}
+          onToggleTodo={(id) => actions.toggleTodo(id)}
+          totalSec={totalSec}
+          topSong={bundle.topSong}
         />
       </div>
     </>
@@ -612,209 +633,186 @@ function DayPane({ date, onBack, onJump }) {
 }
 
 // ===========================================================
-// 레트로 타이머 카드 — 큰 디스플레이 + 가장 많이 들은 곡
+// 일기 — 메모 편집 UI와 같은 톤 (끝낸 일 + 본문 + 하단 작업 바)
 // ===========================================================
-function TimerCard({ totalSec, workMinutes, topSong, isToday }) {
-  return (
-    <div style={{
-      position: "relative",
-      padding: "12px 14px 11px",
-      background: "linear-gradient(180deg, #2a3340 0%, #1c232e 100%)",
-      border: "1.4px solid var(--ink)", borderRadius: 12,
-      boxShadow: "0 3px 0 var(--paper-3), inset 0 1px 0 rgba(255,255,255,0.1)",
-      overflow: "hidden",
-    }}>
-      {/* 스캔라인 텍스처 — 옛 LCD/CRT 느낌 */}
-      <div style={{
-        position: "absolute", inset: 0, pointerEvents: "none",
-        background: "repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 3px)",
-      }} />
-
-      <div style={{
-        display: "flex", alignItems: "baseline", gap: 8, position: "relative",
-      }}>
-        <span style={{
-          fontFamily: "var(--mono)", fontSize: 9, fontWeight: 700,
-          color: "#9ef0c4", letterSpacing: "0.18em",
-        }}>WORK TIMER</span>
-        <span style={{ flex: 1 }} />
-        <span style={{
-          fontFamily: "var(--mono)", fontSize: 9,
-          color: "rgba(255,255,255,0.5)", letterSpacing: "0.1em",
-        }}>{isToday ? "● LIVE" : "REC"}</span>
-      </div>
-
-      <div style={{
-        marginTop: 6, position: "relative",
-        fontFamily: "var(--mono)", fontSize: 32, fontWeight: 700,
-        color: "#bafff0", letterSpacing: "0.08em",
-        textShadow: "0 0 8px rgba(186,255,240,0.5), 0 0 2px rgba(186,255,240,0.8)",
-        lineHeight: 1,
-      }}>
-        {fmtSecondsHMS(totalSec)}
-      </div>
-
-      <div style={{
-        marginTop: 8, position: "relative",
-        display: "flex", alignItems: "center", gap: 6,
-        padding: "6px 9px",
-        background: "rgba(255,255,255,0.06)",
-        border: "1px solid rgba(255,255,255,0.12)",
-        borderRadius: 7,
-      }}>
-        <span style={{ fontSize: 11, color: "#ffc7d4" }}>♫</span>
-        {topSong ? (
-          <>
-            <span style={{
-              flex: 1, minWidth: 0,
-              fontFamily: "var(--hand)", fontSize: 12,
-              color: "rgba(255,255,255,0.95)",
-              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-            }}>{topSong.title || "(제목 없음)"}</span>
-            <span style={{
-              fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700,
-              color: "#fdff85", flexShrink: 0,
-            }}>×{topSong.count}</span>
-          </>
-        ) : (
-          <span style={{
-            flex: 1, fontFamily: "var(--hand)", fontSize: 11,
-            color: "rgba(255,255,255,0.5)", fontStyle: "italic",
-          }}>들은 곡이 없어요</span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ===========================================================
-// 일기장 노트 — 가로 줄/날짜/작업종료 시간
-// ===========================================================
-function Notebook({ date, dateObj, dow, endClock, mood, onMoodChange, text, onTextChange, isToday }) {
-  const LH = 28;             // 줄 간격
-  const MARGIN_L = 32;       // 좌측 빨간 마진선
-  const ko = `${dateObj.getMonth() + 1}월 ${dateObj.getDate()}일 (${dow})`;
-
-  // 줄 패턴 — 가로 라인 (밝은 청회색)
-  const rules = `repeating-linear-gradient(to bottom, transparent 0, transparent ${LH - 1}px, #b8d0e8 ${LH - 1}px, #b8d0e8 ${LH}px)`;
+function Notebook({
+  date, dateObj, dow, endClock, mood, onMoodChange, text, onTextChange, isToday,
+  items, doneCount, totalCount, onToggleTodo, totalSec, topSong,
+}) {
+  const dateLabel = window.i18n && window.i18n.fmtDate
+    ? window.i18n.fmtDate(date)
+    : `${dateObj.getMonth() + 1}/${dateObj.getDate()} (${dow})`;
 
   return (
     <div style={{
-      position: "relative",
-      background: "#fdfbf2",                            // 미색 종이톤
-      border: "1.4px solid var(--ink)", borderRadius: 10,
-      boxShadow: "0 3px 0 var(--paper-3), 0 6px 14px -8px rgba(40,51,63,0.18)",
+      flex: 1, minHeight: 0, display: "flex", flexDirection: "column",
+      background: "#ffffff",
+      border: "1.1px solid var(--ink)", borderRadius: 8,
+      boxShadow: "0 2px 0 var(--paper-3)",
       overflow: "hidden",
     }}>
-      {/* 위쪽 펀치홀 띠 */}
+      {/* 타이틀바 */}
       <div style={{
-        height: 12, background: "#f5ebd6",
-        borderBottom: "1px dashed #c9b88f",
-        display: "flex", alignItems: "center", justifyContent: "space-around",
-        padding: "0 14px",
-      }}>
-        {[0,1,2,3,4,5].map(i => (
-          <span key={i} style={{
-            width: 5, height: 5, borderRadius: "50%",
-            background: "#d8c69a", boxShadow: "inset 0 1px 0 rgba(0,0,0,0.15)",
-          }} />
-        ))}
-      </div>
-
-      {/* 헤더 — 날짜 + 기분 한 줄 */}
-      <div style={{
-        padding: "9px 12px 8px",
-        borderBottom: "1px dashed #d6c89c",
-        background: "linear-gradient(180deg, rgba(255,255,255,0.6), transparent)",
+        flexShrink: 0, padding: "6px 10px",
+        background: "linear-gradient(180deg, color-mix(in srgb, var(--chrome,#a9cdf5) 42%, white) 0%, color-mix(in srgb, var(--chrome,#a9cdf5) 12%, white) 100%)",
+        borderBottom: "1.1px solid var(--ink)",
         display: "flex", alignItems: "center", gap: 8,
       }}>
-        <div style={{
-          flexShrink: 0,
-          fontFamily: "var(--hand)", fontSize: 14, fontWeight: 700, color: "#5a4a30",
-        }}>
-          <span style={{ fontSize: 11, color: "#9b8453", marginRight: 4 }}>DATE</span>
-          {ko}
+        <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>📔</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            fontFamily: "var(--hand)", fontSize: 14, fontWeight: 700, color: "var(--ink)",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>{L("planner.diaryTitle")}</div>
+          <div style={{
+            fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-3)", marginTop: 1,
+          }}>{dateLabel}</div>
         </div>
+        {isToday && (
+          <span style={{
+            fontFamily: "var(--mono)", fontSize: 9, color: "var(--ink)",
+            background: "var(--point)", padding: "1px 6px", borderRadius: 99,
+            border: "1px solid var(--ink)", flexShrink: 0,
+          }}>{L("planner.today")}</span>
+        )}
+      </div>
+
+      {/* 기분 */}
+      <div style={{
+        flexShrink: 0, padding: "6px 10px",
+        background: "#fbfcfe", borderBottom: "1px solid #e4e8ee",
+        display: "flex", alignItems: "center", gap: 8, minHeight: 0,
+      }}>
+        <span style={{
+          fontFamily: "var(--mono)", fontSize: 9.5, color: "var(--ink-3)", flexShrink: 0,
+        }}>{L("planner.mood")}</span>
         <MoodRow value={mood} onChange={onMoodChange} />
       </div>
 
-      {/* 줄친 종이 */}
+      {/* 끝낸 일 — 일기창 내부 */}
       <div style={{
-        position: "relative",
-        paddingLeft: MARGIN_L,
+        flexShrink: 0, borderBottom: "1px solid #e4e8ee", background: "#fafbfc",
       }}>
-        {/* 좌측 빨간 마진선 */}
         <div style={{
-          position: "absolute", top: 0, bottom: 0, left: MARGIN_L - 1,
-          width: 1, background: "#e58aa0",
-        }} />
-        <div style={{
-          position: "absolute", top: 0, bottom: 0, left: MARGIN_L - 4,
-          width: 1, background: "rgba(229,138,160,0.3)",
-        }} />
-
-        <textarea
-          value={text}
-          onChange={onTextChange}
-          placeholder="오늘의 일기..."
-          rows={7}
-          style={{
-            display: "block", width: "100%", boxSizing: "border-box",
-            border: 0, outline: "none", resize: "vertical",
-            background: rules,
-            backgroundAttachment: "local",
-            paddingTop: 4, paddingRight: 12, paddingBottom: 8, paddingLeft: 6,
-            minHeight: LH * 6 + 4,
-            fontFamily: '"Gaegu", "Caveat", var(--hand)',
-            fontSize: 16,
-            lineHeight: `${LH}px`,
-            color: "#2a3340",
-            letterSpacing: "0.01em",
-          }}
-        />
+          padding: "5px 10px", display: "flex", alignItems: "center", gap: 6,
+          borderBottom: items.length ? "1px solid #eef0f3" : "none",
+        }}>
+          <span style={{ fontFamily: "var(--hand)", fontSize: 12, fontWeight: 700, color: "#2b2f36" }}>
+            {L("planner.doneSection")}
+          </span>
+          <span style={{
+            fontFamily: "var(--mono)", fontSize: 10, color: "#4a5568",
+            background: "rgba(255,255,255,0.75)", padding: "0 6px", borderRadius: 99,
+            border: "1px solid #d8dee5",
+          }}>{doneCount} / {totalCount}</span>
+        </div>
+        {items.length === 0 ? (
+          <div className="sk-cap" style={{ padding: "10px 10px 12px", fontSize: 11.5, color: "var(--ink-3)", textAlign: "center" }}>
+            {L("planner.noTasksDay")}
+          </div>
+        ) : (
+          <div style={{
+            padding: "6px 10px 8px", display: "flex", flexDirection: "column", gap: 3,
+            maxHeight: 130, overflowY: "auto",
+          }}>
+            {items.map(t => (
+              <TodoLine key={t.id} t={t} onToggle={() => onToggleTodo(t.id)} />
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* 푸터 — 작업 종료 시간 */}
-      <div style={{
-        padding: "6px 12px 7px",
-        borderTop: "1px dashed #d6c89c",
-        background: "linear-gradient(180deg, transparent, rgba(245,235,214,0.7))",
-        display: "flex", alignItems: "center", gap: 6,
-        fontFamily: "var(--hand)", fontSize: 11, color: "#7a6543",
-      }}>
-        <span style={{ fontSize: 10 }}>⌛</span>
-        <span>작업 종료</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ fontFamily: "var(--mono)", fontWeight: 700, color: "#5a4a30" }}>
-          {endClock ? endClock : "—"}
-        </span>
-      </div>
+      {/* 일기 본문 */}
+      <textarea
+        value={text}
+        onChange={onTextChange}
+        placeholder={L("planner.diaryPh")}
+        style={{
+          flex: 1, minHeight: 120, width: "100%", boxSizing: "border-box",
+          border: 0, outline: "none", resize: "none",
+          padding: "14px 16px 16px",
+          background: "linear-gradient(180deg, #ffffff 0%, #fffdf8 100%)",
+          fontFamily: "var(--hand)", fontSize: 14, lineHeight: 1.65,
+          color: "#222",
+        }}
+      />
+
+      {/* 하단 — 작업 기록 · 음악 · 종료 시각 (얇은 바) */}
+      <WorkDayBar totalSec={totalSec} topSong={topSong} endClock={endClock} />
     </div>
   );
 }
 
-// 기분 — 한 줄 가로 배치 (자그마한 아이콘)
+function WorkDayBar({ totalSec, topSong, endClock }) {
+  return (
+    <div style={{
+      flexShrink: 0, padding: "5px 10px",
+      background: "#eef2f7", borderTop: "1px solid #d8dee5",
+      display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap",
+      fontFamily: "var(--hand)", fontSize: 10.5, color: "#4a5568",
+      rowGap: 2,
+    }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+        <span>🕒</span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, color: "var(--ink)" }}>
+          {fmtSecondsHMS(totalSec)}
+        </span>
+      </span>
+      <span style={{ color: "#c5cdd8", flexShrink: 0 }}>·</span>
+      <span style={{
+        flex: 1, minWidth: 80,
+        display: "inline-flex", alignItems: "center", gap: 4,
+        overflow: "hidden",
+      }}>
+        <span style={{ flexShrink: 0 }}>♫</span>
+        <span style={{
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          color: topSong ? "var(--ink)" : "var(--ink-3)",
+        }}>
+          {topSong
+            ? `${topSong.title || L("planner.noSongTitle")} ×${topSong.count}`
+            : L("planner.noSong")}
+        </span>
+      </span>
+      <span style={{ color: "#c5cdd8", flexShrink: 0 }}>·</span>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+        <span>⌛</span>
+        <span>{L("planner.workEnd")}</span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 10, fontWeight: 700, color: "var(--ink)" }}>
+          {endClock || "—"}
+        </span>
+      </span>
+    </div>
+  );
+}
+
+// 기분 — 메모 QuickBlockBtn 스타일
 function MoodRow({ value, onChange }) {
   return (
     <div style={{
       flex: 1, minWidth: 0,
-      display: "flex", gap: 3, justifyContent: "flex-end",
-      overflowX: "auto",
+      display: "flex", gap: 4, justifyContent: "flex-end", flexWrap: "wrap",
     }}>
       {MOODS.map(m => {
         const active = value === m.id;
         return (
           <button key={m.id} onClick={() => onChange(active ? null : m.id)} title={m.label} style={{
             all: "unset", cursor: "pointer", flexShrink: 0,
-            display: "grid", placeItems: "center",
-            width: 24, height: 24, borderRadius: 6,
-            background: active ? "color-mix(in srgb, var(--point,#fdff85) 70%, white)" : "transparent",
-            border: active ? "1.2px solid var(--ink)" : "1px solid transparent",
-            boxShadow: active ? "0 1.5px 0 var(--paper-3)" : "none",
-            transition: "background .08s, border-color .08s",
-            opacity: active ? 1 : 0.55,
+            display: "inline-flex", alignItems: "center", gap: 4,
+            padding: "2px 7px", borderRadius: 6,
+            border: active ? "1.1px solid var(--ink)" : "1px solid #d8dee5",
+            background: active
+              ? "linear-gradient(180deg, var(--point-soft), var(--point))"
+              : "linear-gradient(180deg, #ffffff 0%, #f3f6fa 100%)",
+            boxShadow: active ? "0 1px 0 var(--paper-3)" : "0 1px 0 rgba(255,255,255,0.75) inset",
+            opacity: active ? 1 : 0.72,
+            transition: "opacity .08s, border-color .08s",
           }}>
-            <MoodIcon mood={m.id} size={18} />
+            <MoodIcon mood={m.id} size={16} />
+            <span style={{
+              fontFamily: "var(--hand)", fontSize: 10.5, color: "var(--ink)",
+              display: active ? "inline" : "none",
+            }}>{m.label}</span>
           </button>
         );
       })}
@@ -822,45 +820,14 @@ function MoodRow({ value, onChange }) {
   );
 }
 
-function Section({ title, badge, children }) {
-  return (
-    <div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 5 }}>
-        <div style={{
-          fontFamily: "var(--hand)", fontSize: 13, fontWeight: 700,
-          color: "var(--ink)", letterSpacing: "0.02em",
-        }}>{title}</div>
-        {badge != null && (
-          <span style={{
-            fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-2)",
-            background: "var(--paper-2)", padding: "0 6px", borderRadius: 99,
-            border: "1px solid var(--ink-soft)",
-          }}>{badge}</span>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
-function Empty({ text }) {
-  return (
-    <div style={{
-      padding: "16px 12px", textAlign: "center",
-      fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink-3)",
-      background: "var(--paper-2)", border: "1.1px dashed var(--ink-soft)",
-      borderRadius: 10,
-    }}>{text}</div>
-  );
-}
 function TodoLine({ t, onToggle }) {
   const mins = Math.round((t.trackedSeconds || 0) / 60);
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 7,
-      padding: "7px 9px",
-      background: "var(--paper)",
-      border: "1.1px solid var(--ink)", borderRadius: 9,
-      boxShadow: "0 1.5px 0 var(--paper-3)",
+      padding: "6px 8px",
+      background: t.done ? "#f7f9fc" : "#ffffff",
+      border: "1px solid #e4e8ee", borderRadius: 6,
     }}>
       <button onClick={onToggle} title={t.done ? "되돌리기" : "끝냄으로"} style={{
         all: "unset", cursor: "pointer", flexShrink: 0,

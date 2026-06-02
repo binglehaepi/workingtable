@@ -1,4 +1,4 @@
-/* global React, diary, SplitPane */
+/* global React, diary, SplitPane, SpriteIcon */
 // ===========================================================
 // 메모 — 작은 노션 + 버디버디 UI
 //   화면1: 친구목록(버디버디 흰 창) + 메모 관리(검색/정렬/일괄)
@@ -6,9 +6,28 @@
 // ===========================================================
 const { useState, useEffect, useRef } = React;
 
+function consumePendingMemoId() {
+  const id = window.todoaryPendingMemoId || null;
+  if (id) window.todoaryPendingMemoId = null;
+  return id;
+}
+
 function MemoView() {
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedId, setSelectedId] = useState(() => consumePendingMemoId());
   const { state } = diary.useDiary();
+  useEffect(() => {
+    const onOpenMemo = (e) => {
+      const id = e.detail?.memoId || consumePendingMemoId();
+      if (id) {
+        window.todoaryPendingMemoId = null;
+        setSelectedId(id);
+      }
+    };
+    window.addEventListener("todoary-open-memo", onOpenMemo);
+    const pending = consumePendingMemoId();
+    if (pending) setSelectedId(pending);
+    return () => window.removeEventListener("todoary-open-memo", onOpenMemo);
+  }, []);
   useEffect(() => {
     if (selectedId && !state.memos.find(m => m.id === selectedId)) setSelectedId(null);
   }, [selectedId, state.memos]);
@@ -34,10 +53,11 @@ function MemoListScreen({ onOpen }) {
     onOpen(id);
   };
 
-  const cleanEmpty = () => {
+  const cleanEmpty = async () => {
     const empty = allMemos.filter(m => isEmptyMemo(m));
-    if (!empty.length) { alert(L("memo.noEmpty")); return; }
-    if (!confirm(L("memo.cleanConfirm", { n: empty.length }))) return;
+    if (!empty.length) { await window.dialog.alert(L("memo.noEmpty")); return; }
+    const ok = await window.dialog.confirm(L("memo.cleanConfirm", { n: empty.length }));
+    if (!ok) return;
     empty.forEach(m => actions.removeMemo(m.id));
   };
 
@@ -51,7 +71,10 @@ function MemoListScreen({ onOpen }) {
           pickerOpenId={pickerOpenId}
           setPickerOpenId={setPickerOpenId}
           onPickIcon={(id, icon) => { actions.updateMemo(id, { icon }); setPickerOpenId(null); }}
-          onDelete={(m) => { if (confirm(L("memo.delConfirm", { x: m.title || L("memo.untitled") }))) actions.removeMemo(m.id); }}
+          onDelete={async (m) => {
+            const ok = await window.dialog.confirm(L("memo.delConfirm", { x: m.title || L("memo.untitled") }));
+            if (ok) actions.removeMemo(m.id);
+          }}
           onCreate={createNew}
         />
       }
@@ -170,9 +193,11 @@ function BuddyRow({ memo, pickerOpen, onClick, onTogglePicker, onPickIcon, onDel
           style={{
             all: "unset", cursor: "pointer", flexShrink: 0,
             width: 22, height: 22, borderRadius: 4,
-            display: "grid", placeItems: "center", fontSize: 17, lineHeight: 1,
+            display: "grid", placeItems: "center", lineHeight: 1,
             background: pickerOpen ? "var(--hi)" : "transparent",
-          }}>{memo.icon || "📝"}</button>
+          }}>
+          <SpriteIcon idx={typeof memo.icon === "number" ? memo.icon : 22} size={16} />
+        </button>
         <span style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "baseline", gap: 6 }}>
           <span style={{
             fontFamily: "var(--hand)", fontSize: 13, fontWeight: 700, color: "#2b2f36",
@@ -211,10 +236,12 @@ function BuddyRow({ memo, pickerOpen, onClick, onTogglePicker, onPickIcon, onDel
               style={{
                 all: "unset", cursor: "pointer",
                 width: 22, height: 22, borderRadius: 4,
-                display: "grid", placeItems: "center", fontSize: 15, lineHeight: 1,
+                display: "grid", placeItems: "center", lineHeight: 1,
                 background: memo.icon === icon ? "var(--hi)" : "transparent",
                 border: memo.icon === icon ? "1px solid var(--ink)" : "1px solid transparent",
-              }}>{icon}</button>
+              }}>
+              <SpriteIcon idx={icon} size={16} />
+            </button>
           ))}
         </div>
       )}
@@ -280,8 +307,12 @@ function SortBtn({ active, onClick, children }) {
 function MemoEditScreen({ memoId, onBack }) {
   const { state, actions } = diary.useDiary();
   const memo = state.memos.find(m => m.id === memoId);
+  const linkedTodo = memo?.todoId ? state.todos.find(t => t.id === memo.todoId) : null;
+  const linkedSubTaskSig = (linkedTodo?.subTasks || []).map(st => `${st.id}:${st.done ? 1 : 0}`).join("|");
   const editorRef = useRef(null);
   const saveTimerRef = useRef(null);
+  const savedRangeRef = useRef(null);
+  const dragImageRef = useRef(null);
   // 현재 selection의 서식 상태 (B/I/U/S, 리스트, 정렬, 헤딩, 폰트, 크기)
   const [active, setActive] = useState({ heading: "p", font: "", size: "" });
 
@@ -292,6 +323,35 @@ function MemoEditScreen({ memoId, onBack }) {
       editorRef.current.innerHTML = memo.html || "";
     }
   }, [memoId]);
+
+  const syncLinkedTodoChecks = React.useCallback((todoId, done) => {
+    const editor = editorRef.current;
+    if (!editor || !todoId) return;
+    editor.querySelectorAll('input[type="checkbox"][data-linked-todo-check]').forEach(el => {
+      if (el.getAttribute("data-linked-todo-check") !== todoId) return;
+      el.checked = !!done;
+      if (done) el.setAttribute("checked", "checked");
+      else el.removeAttribute("checked");
+    });
+  }, []);
+
+  const syncLinkedSubTaskChecks = React.useCallback((todoId, subId, done) => {
+    const editor = editorRef.current;
+    if (!editor || !todoId || !subId) return;
+    editor.querySelectorAll('input[type="checkbox"][data-linked-subtask-check]').forEach(el => {
+      if (el.getAttribute("data-linked-subtask-parent") !== todoId) return;
+      if (el.getAttribute("data-linked-subtask-check") !== subId) return;
+      el.checked = !!done;
+      if (done) el.setAttribute("checked", "checked");
+      else el.removeAttribute("checked");
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!linkedTodo) return;
+    syncLinkedTodoChecks(linkedTodo.id, linkedTodo.done);
+    (linkedTodo.subTasks || []).forEach(st => syncLinkedSubTaskChecks(linkedTodo.id, st.id, st.done));
+  }, [linkedTodo?.id, linkedTodo?.done, linkedSubTaskSig, memoId, syncLinkedTodoChecks, syncLinkedSubTaskChecks]);
 
   // selectionchange로 서식 활성 상태 추적
   useEffect(() => {
@@ -347,6 +407,26 @@ function MemoEditScreen({ memoId, onBack }) {
       }
     };
   }, [memoId]);
+
+  const saveSelection = () => {
+    const editor = editorRef.current;
+    const sel = window.getSelection();
+    if (!editor || !sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return;
+    savedRangeRef.current = range.cloneRange();
+  };
+
+  const restoreSelection = () => {
+    const editor = editorRef.current;
+    if (!editor) return false;
+    editor.focus();
+    const sel = window.getSelection();
+    if (!sel || !savedRangeRef.current) return false;
+    sel.removeAllRanges();
+    sel.addRange(savedRangeRef.current);
+    return true;
+  };
 
   const exec = (cmd, val) => {
     editorRef.current?.focus();
@@ -404,38 +484,216 @@ function MemoEditScreen({ memoId, onBack }) {
   const onRedo = () => exec("redo");
   const onClearFormat = () => exec("removeFormat");
 
+  const insertHtml = (html) => {
+    editorRef.current?.focus();
+    try { document.execCommand("insertHTML", false, html); } catch (_) {}
+    queueSave();
+  };
+
+  const insertTodoBlock = () => {
+    insertHtml(`<div data-memo-todo="1"><input type="checkbox" data-memo-check="1" /> <span>${escapeHtml(L("memo.todoText"))}</span></div><div><br></div>`);
+  };
+
+  const getCurrentBlock = () => {
+    const editor = editorRef.current;
+    const sel = window.getSelection();
+    if (!editor || !sel || sel.rangeCount === 0) return null;
+    let node = sel.anchorNode;
+    if (!node || !editor.contains(node)) return null;
+    node = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    while (node && node !== editor && !/^(DIV|P|H1|H2|H3|LI|BLOCKQUOTE)$/i.test(node.nodeName)) {
+      node = node.parentElement;
+    }
+    return node && node !== editor ? node : null;
+  };
+
+  const textBeforeCaret = (block) => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !block) return "";
+    try {
+      const r = sel.getRangeAt(0).cloneRange();
+      r.selectNodeContents(block);
+      r.setEnd(sel.anchorNode, sel.anchorOffset);
+      return r.toString();
+    } catch (_) {
+      return "";
+    }
+  };
+
+  const clearBlockPrefix = (block, prefix) => {
+    const rest = (block.textContent || "").slice(prefix.length);
+    block.textContent = rest;
+    const sel = window.getSelection();
+    if (!sel) return;
+    const r = document.createRange();
+    if (block.firstChild) r.setStart(block.firstChild, 0);
+    else r.setStart(block, 0);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  };
+
+  const applyMarkdownShortcut = () => {
+    const block = getCurrentBlock();
+    const before = textBeforeCaret(block);
+    if (!block) return false;
+    const shortcuts = [
+      ["###", () => onHeading("h3")],
+      ["##", () => onHeading("h2")],
+      ["#", () => onHeading("h1")],
+      [">", () => onQuote()],
+      ["-", () => exec("insertUnorderedList")],
+      ["*", () => exec("insertUnorderedList")],
+      ["1.", () => exec("insertOrderedList")],
+      ["[]", () => insertTodoBlock()],
+    ];
+    const hit = shortcuts.find(([prefix]) => before === prefix);
+    if (!hit) return false;
+    clearBlockPrefix(block, hit[0]);
+    hit[1]();
+    return true;
+  };
+
+  const onEditorKeyDown = (e) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      exec(e.shiftKey ? "outdent" : "indent");
+      return;
+    }
+    if (e.key === " " && applyMarkdownShortcut()) {
+      e.preventDefault();
+    }
+  };
+
   const onAddImage = (file) => {
     if (!file) return;
-    if (file.size > 600 * 1024) { alert(L("memo.imageTooLarge")); return; }
+    if (file.size > 600 * 1024) { window.dialog.alert(L("memo.imageTooLarge")); return; }
     const reader = new FileReader();
     reader.onload = (e) => {
       const url = e.target.result;
       editorRef.current?.focus();
-      const html = `<img src="${url}" style="max-width:100%; display:block; margin: 6px 0; border-radius: 6px;" />`;
+      const html = `<img src="${url}" draggable="true" data-memo-image="1" style="max-width:100%; display:block; margin: 6px 0; border-radius: 6px;" />`;
       try { document.execCommand("insertHTML", false, html); } catch (_) {}
       queueSave();
     };
     reader.readAsDataURL(file);
   };
 
-  const onAddLink = () => {
-    let url = prompt(L("memo.linkUrl"));
-    if (!url?.trim()) return;
+  const onAddLink = async () => {
+    saveSelection();
+    let url = await window.dialog.prompt(L("memo.linkUrl"));
+    if (!url || !url.trim()) return;
     url = url.trim();
     if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-    editorRef.current?.focus();
+    restoreSelection();
     const sel = window.getSelection();
-    if (sel && sel.toString().length > 0) {
-      try { document.execCommand("createLink", false, url); } catch (_) {}
+    if (sel && sel.rangeCount > 0 && sel.toString().length > 0) {
+      const range = sel.getRangeAt(0);
+      const a = document.createElement("a");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      try {
+        a.appendChild(range.extractContents());
+        range.insertNode(a);
+        sel.removeAllRanges();
+        const next = document.createRange();
+        next.setStartAfter(a);
+        next.collapse(true);
+        sel.addRange(next);
+      } catch (_) {
+        try { document.execCommand("createLink", false, url); } catch (_) {}
+      }
     } else {
-      const label = prompt(L("memo.linkLabel"), url) || url;
-      try { document.execCommand("insertHTML", false, `<a href="${url}" target="_blank">${escapeAttr(label)}</a>`); } catch (_) {}
+      const label = (await window.dialog.prompt(L("memo.linkLabel"), url)) || url;
+      restoreSelection();
+      try { document.execCommand("insertHTML", false, `<a href="${escapeAttr(url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`); } catch (_) {}
     }
+    queueSave();
+  };
+
+  const caretRangeFromPoint = (x, y) => {
+    if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
+    if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(x, y);
+      if (!pos) return null;
+      const range = document.createRange();
+      range.setStart(pos.offsetNode, pos.offset);
+      range.collapse(true);
+      return range;
+    }
+    return null;
+  };
+
+  const onEditorDragStart = (e) => {
+    const img = e.target.closest && e.target.closest("img");
+    if (!img || !editorRef.current?.contains(img)) return;
+    img.draggable = true;
+    dragImageRef.current = img;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/x-memo-image", "move");
+  };
+
+  const onEditorDragOver = (e) => {
+    if (!dragImageRef.current) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  };
+
+  const onEditorDrop = (e) => {
+    const img = dragImageRef.current;
+    const editor = editorRef.current;
+    if (!img || !editor) return;
+    e.preventDefault();
+    const range = caretRangeFromPoint(e.clientX, e.clientY);
+    if (!range || !editor.contains(range.commonAncestorContainer)) {
+      dragImageRef.current = null;
+      return;
+    }
+    img.remove();
+    range.insertNode(img);
+    const after = document.createRange();
+    after.setStartAfter(img);
+    after.collapse(true);
+    const sel = window.getSelection();
+    if (sel) {
+      sel.removeAllRanges();
+      sel.addRange(after);
+    }
+    dragImageRef.current = null;
     queueSave();
   };
 
   // 링크 클릭 시 외부 열기 (편집기 안에서도)
   const onEditorClick = (e) => {
+    const linkedCheck = e.target.closest && e.target.closest('input[type="checkbox"][data-linked-todo-check]');
+    if (linkedCheck && editorRef.current?.contains(linkedCheck)) {
+      const todoId = linkedCheck.getAttribute("data-linked-todo-check");
+      if (todoId) {
+        actions.setTodoDone(todoId, linkedCheck.checked);
+        syncLinkedTodoChecks(todoId, linkedCheck.checked);
+      }
+      queueSave();
+      return;
+    }
+    const linkedSubCheck = e.target.closest && e.target.closest('input[type="checkbox"][data-linked-subtask-check]');
+    if (linkedSubCheck && editorRef.current?.contains(linkedSubCheck)) {
+      const todoId = linkedSubCheck.getAttribute("data-linked-subtask-parent");
+      const subId = linkedSubCheck.getAttribute("data-linked-subtask-check");
+      if (todoId && subId) {
+        actions.setSubTaskDone(todoId, subId, linkedSubCheck.checked);
+        syncLinkedSubTaskChecks(todoId, subId, linkedSubCheck.checked);
+      }
+      queueSave();
+      return;
+    }
+    const check = e.target.closest && e.target.closest('input[type="checkbox"][data-memo-check]');
+    if (check && editorRef.current?.contains(check)) {
+      if (check.checked) check.setAttribute("checked", "checked");
+      else check.removeAttribute("checked");
+      queueSave();
+      return;
+    }
     const a = e.target.closest && e.target.closest("a");
     if (a && a.href && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -456,34 +714,86 @@ function MemoEditScreen({ memoId, onBack }) {
         borderBottom: "1.1px solid var(--ink)",
       }}>
         <button onClick={onBack} title={L("memo.back")} style={headerBtn}>←</button>
-        <span style={{ fontSize: 18, lineHeight: 1, flexShrink: 0 }}>{memo.icon || "📝"}</span>
+        <SpriteIcon idx={typeof memo.icon === "number" ? memo.icon : 22} size={18} style={{ flexShrink: 0 }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{
-            fontFamily: "var(--hand)", fontSize: 14, fontWeight: 700, color: "var(--ink)",
-            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-          }}>{(memo.title || "").trim() || L("memo.newDraft")}</div>
+          <input
+            value={memo.title || ""}
+            onChange={(e) => actions.updateMemo(memoId, { title: e.target.value })}
+            placeholder={L("memo.newDraft")}
+            style={{
+              width: "100%", boxSizing: "border-box",
+              border: 0, outline: "none", background: "transparent",
+              fontFamily: "var(--hand)", fontSize: 14, fontWeight: 700, color: "var(--ink)",
+            }}
+          />
         </div>
         <button
-          onClick={() => { if (confirm(L("memo.delConfirm", { x: memo.title || L("memo.untitled") }))) { actions.removeMemo(memoId); onBack(); } }}
+          onClick={async () => {
+            const ok = await window.dialog.confirm(L("memo.delConfirm", { x: memo.title || L("memo.untitled") }));
+            if (ok) { actions.removeMemo(memoId); onBack(); }
+          }}
           title={L("memo.delete")}
           style={headerBtn}
         >🗑</button>
       </div>
+
+      {linkedTodo && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "6px 10px",
+          background: linkedTodo.done ? "#eef8ef" : "#fffaf0",
+          borderBottom: "1px solid #e4e8ee",
+        }}>
+          <button
+            onClick={() => actions.setTodoDone(linkedTodo.id, !linkedTodo.done)}
+            className={"sk-check" + (linkedTodo.done ? " done" : "")}
+            style={{ cursor: "pointer", flexShrink: 0 }}
+            title={linkedTodo.done ? L("todo.undoDone") : L("todo.markDone")}
+          />
+          <span style={{
+            flex: 1, minWidth: 0,
+            fontFamily: "var(--hand)", fontSize: 13, fontWeight: 700,
+            color: linkedTodo.done ? "var(--ink-3)" : "var(--ink)",
+            textDecoration: linkedTodo.done ? "line-through" : "none",
+            whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          }}>
+            {linkedTodo.title}
+          </span>
+          <span className="sk-cap" style={{ flexShrink: 0, fontSize: 10 }}>
+            {L("memo.linkedTodo")}
+          </span>
+        </div>
+      )}
+
+      <QuickBlockBar
+        onHeading={() => onHeading("h2")}
+        onTodo={insertTodoBlock}
+        onBullet={() => exec("insertUnorderedList")}
+        onQuote={onQuote}
+        onHr={onHr}
+      />
 
       {/* 본문 (contenteditable) */}
       <div
         ref={editorRef}
         contentEditable
         suppressContentEditableWarning
+        data-placeholder={L("memo.placeholder")}
         onInput={queueSave}
         onBlur={queueSave}
         onClick={onEditorClick}
+        onMouseUp={saveSelection}
+        onKeyUp={saveSelection}
+        onKeyDown={onEditorKeyDown}
+        onDragStart={onEditorDragStart}
+        onDragOver={onEditorDragOver}
+        onDrop={onEditorDrop}
         className="memo-editor"
         style={{
           flex: 1, minHeight: 0, overflowY: "auto",
-          padding: "12px 14px",
-          background: "#ffffff",
-          fontFamily: "var(--hand)", fontSize: 12, lineHeight: 1.5, color: "#222",
+          padding: "18px 18px 28px",
+          background: "linear-gradient(180deg, #ffffff 0%, #fffdf8 100%)",
+          fontFamily: "var(--hand)", fontSize: 14, lineHeight: 1.65, color: "#222",
           outline: "none",
         }}
       />
@@ -520,6 +830,9 @@ function safeState(cmd) {
 function escapeAttr(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 const headerBtn = {
   all: "unset", cursor: "pointer", flexShrink: 0,
@@ -528,6 +841,42 @@ const headerBtn = {
   fontSize: 14, color: "var(--ink)",
   background: "rgba(255,255,255,0.7)", border: "1px solid var(--ink-soft)",
 };
+
+function QuickBlockBar({ onHeading, onTodo, onBullet, onQuote, onHr }) {
+  return (
+    <div style={{
+      flexShrink: 0,
+      display: "flex", alignItems: "center", gap: 4,
+      padding: "6px 10px",
+      background: "#fbfcfe",
+      borderBottom: "1px solid #e4e8ee",
+      overflowX: "auto",
+    }}>
+      <span style={{
+        fontFamily: "var(--mono)", fontSize: 9.5,
+        color: "var(--ink-3)", flexShrink: 0, marginRight: 2,
+      }}>{L("memo.blocks")}</span>
+      <QuickBlockBtn onClick={onHeading}>{L("memo.quickTitle")}</QuickBlockBtn>
+      <QuickBlockBtn onClick={onTodo}>{L("memo.quickTodo")}</QuickBlockBtn>
+      <QuickBlockBtn onClick={onBullet}>{L("memo.quickList")}</QuickBlockBtn>
+      <QuickBlockBtn onClick={onQuote}>{L("memo.quickQuote")}</QuickBlockBtn>
+      <QuickBlockBtn onClick={onHr}>{L("memo.quickDivider")}</QuickBlockBtn>
+    </div>
+  );
+}
+
+function QuickBlockBtn({ onClick, children }) {
+  return (
+    <button onMouseDown={(e) => e.preventDefault()} onClick={onClick} style={{
+      all: "unset", cursor: "pointer", flexShrink: 0,
+      padding: "2px 8px", borderRadius: 6,
+      border: "1px solid #d8dee5",
+      background: "linear-gradient(180deg, #ffffff 0%, #f3f6fa 100%)",
+      fontFamily: "var(--hand)", fontSize: 11.5, color: "var(--ink)",
+      boxShadow: "0 1px 0 rgba(255,255,255,0.75) inset",
+    }}>{children}</button>
+  );
+}
 
 // ---- 네이버 스마트에디터 풍 툴바 ----
 const HEADING_ITEMS = [
@@ -884,17 +1233,36 @@ if (typeof document !== "undefined" && !document.getElementById("memo-editor-css
   const s = document.createElement("style");
   s.id = "memo-editor-css";
   s.textContent = `
-    .memo-editor img { max-width: 100%; height: auto; }
+    .memo-editor:empty::before {
+      content: attr(data-placeholder);
+      color: rgba(40,51,63,0.38);
+      pointer-events: none;
+    }
+    .memo-editor:focus { box-shadow: inset 0 0 0 2px rgba(169,205,245,0.18); }
+    .memo-editor img { max-width: 100%; height: auto; cursor: move; }
     .memo-editor a { color: #3a72b7; text-decoration: underline; }
     .memo-editor ul, .memo-editor ol { margin: 4px 0; padding-left: 22px; }
+    .memo-editor li { margin: 2px 0; }
     .memo-editor blockquote {
       margin: 6px 0; padding: 4px 10px;
       border-left: 3px solid #c6d2e0; color: #555;
+      background: rgba(198,210,224,0.16);
+      border-radius: 0 6px 6px 0;
     }
     .memo-editor h1 { font-size: 17px; font-weight: 700; margin: 7px 0 3px; line-height: 1.4; }
     .memo-editor h2 { font-size: 14px; font-weight: 700; margin: 5px 0 3px; line-height: 1.4; }
     .memo-editor h3 { font-size: 12.5px; font-weight: 700; margin: 4px 0 2px; line-height: 1.4; }
-    .memo-editor p, .memo-editor div { margin: 0; }
+    .memo-editor p, .memo-editor div { margin: 0; min-height: 1.5em; }
+    .memo-editor [data-memo-todo] {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 2px 0;
+    }
+    .memo-editor [data-memo-check] {
+      margin-top: 4px;
+      accent-color: var(--chrome, #a9cdf5);
+    }
   `;
   document.head.appendChild(s);
 }

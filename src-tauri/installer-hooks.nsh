@@ -11,6 +11,9 @@
 ;  - Tauri NSIS 언인스톨러의 /S 모드는 user data 를 기본 유지
 ;
 ; 이 훅은 옛 vibe-diary 등록이 없으면 조용히 패스함 — 신규 설치엔 영향 없음.
+;
+; macOS: NSIS 훅 없음 → src-tauri/src/legacy_macos.rs 가 todoary 첫 실행 시
+;        /Applications(및 ~/Applications) 의 vibe-diary.app 을 bundle id 확인 후 1회 삭제.
 ; ===========================================================
 
 !include "LogicLib.nsh"

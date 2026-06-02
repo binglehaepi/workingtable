@@ -1,4 +1,4 @@
-/* global React, TodayView, TodoView, MemoView, MailView, PromptView, AIView, RetroView, RoomView */
+/* global React, TodayView, TodoView, MemoView, MailView, PromptView, AIView, RetroView, RoomView, SpriteIcon */
 // ===========================================================
 // 사이드 도크 v2 — 다이어리 인덱스 탭 + 뷰 전환
 // 도크 본체 + 옆에 삐죽 나오는 종이 탭들.
@@ -6,22 +6,27 @@
 // 상단 현재 프로젝트 + 하단 타이머는 sticky (모든 탭 공통).
 // ===========================================================
 
-const { useState } = React;
+const { useState, useEffect } = React;
 
 const TABS = [
-  { id: "todo",  labelKey: "tab.todo",     glyph: "✓", color: "#d4ecdb", view: () => <TodoView /> },
-  { id: "cal",   labelKey: "tab.week",     glyph: "📅", color: "#d4e6fa", view: () => <CalendarView /> },
-  { id: "memo",  labelKey: "tab.memo",     glyph: "📝", color: "#fff0c0", view: () => <MemoView /> },
-  { id: "mail",  labelKey: "tab.mail",     glyph: "✉", color: "#ffe0d2", view: () => <MailView /> },
-  { id: "room",  labelKey: "tab.room",     glyph: "👥", color: "#ecdcf5", view: () => <RoomView /> },
-  { id: "deco",  labelKey: "tab.deco",     glyph: "🎨", color: "#ffe6f0", view: () => null, foot: true },
-  { id: "settings", labelKey: "tab.settings", glyph: "⚙", color: "#e6e6ee", view: () => null, foot: true },
+  { id: "todo",  labelKey: "tab.todo",     sprite: 4,  color: "#d4ecdb", view: (ctx) => <TodoView tweaks={ctx?.tweaks} /> },
+  { id: "cal",   labelKey: "tab.week",     sprite: 6,  color: "#d4e6fa", view: () => <CalendarView /> },
+  { id: "memo",  labelKey: "tab.memo",     sprite: 22, color: "#fff0c0", view: () => <MemoView /> },
+  { id: "mail",  labelKey: "tab.mail",     sprite: 0,  color: "#ffe0d2", view: () => <MailView /> },
+  { id: "room",  labelKey: "tab.room",     sprite: 14, color: "#ecdcf5", view: (ctx) => <RoomView tweaks={ctx?.tweaks} /> },
+  { id: "deco",  labelKey: "tab.deco",     sprite: 9,  color: "#ffe6f0", view: () => null, foot: true },
+  { id: "settings", labelKey: "tab.settings", sprite: 1, color: "#e6e6ee", view: () => null, foot: true },
 ];
 
 function SideDockV2({ tweaks, setTweak }) {
   const [active, setActive] = useState("todo");
-  // 작업방 탭 표시 여부 (기본 켜짐). 꺼지면 현재 활성 탭이 room 이었으면 todo 로 자동 전환.
-  const showRoomTab = tweaks?.showRoomTab ?? true;
+  React.useEffect(() => {
+    const onOpenMemo = () => setActive("memo");
+    window.addEventListener("todoary-open-memo", onOpenMemo);
+    return () => window.removeEventListener("todoary-open-memo", onOpenMemo);
+  }, []);
+  // 작업방 탭 표시 여부 (기본 꺼짐). 꺼지면 현재 활성 탭이 room 이었으면 todo 로 자동 전환.
+  const showRoomTab = tweaks?.showRoomTab ?? false;
   const visibleTabs = showRoomTab ? TABS : TABS.filter(t => t.id !== "room");
   React.useEffect(() => {
     if (!showRoomTab && active === "room") setActive("todo");
@@ -98,6 +103,7 @@ function SideDockV2({ tweaks, setTweak }) {
         display: "flex", flexDirection: "column",
         zIndex: 2,
       }}>
+        <AppNotifyToast />
         {/* 글로시 스카이블루 헤더 — 드래그 영역 */}
         <div data-tauri-drag-region style={{
           height: 28,
@@ -130,7 +136,7 @@ function SideDockV2({ tweaks, setTweak }) {
             ? <SettingsView tweaks={tweaks} setTweak={setTweak} />
             : active === "deco"
               ? <DecorateView tweaks={tweaks} setTweak={setTweak} />
-              : current.view()}
+              : current.view({ tweaks, setTweak })}
         </div>
 
       </div>
@@ -258,8 +264,8 @@ function DiaryTabs({ tabs, active, onSelect, dockSide, tabSide, dockWidth, tabSt
   const TAB_GAP = 4;
 
   // ---- 자동 숨김 로직 ----
-  // autoHide=true 일 때: 처음엔 숨김. 가장자리에 마우스 ~1.5초 호버 → 슬라이드로 노출.
-  const REVEAL_DELAY = 1500;
+  // autoHide=true 일 때: 처음엔 숨김. 가장자리에 마우스 ~1초 호버 → 슬라이드로 노출.
+  const REVEAL_DELAY = 1000;
   const HIDE_DELAY = 220;
   const [revealed, setRevealed] = useState(false);
   const revealTimerRef = React.useRef(null);
@@ -320,7 +326,9 @@ function DiaryTabs({ tabs, active, onSelect, dockSide, tabSide, dockWidth, tabSt
         }}
         title={L(t.labelKey)}
       >
-        <span style={{ fontSize: compact ? 18 : 15, color: "var(--ink)", flexShrink: 0 }}>{t.glyph}</span>
+        {t.sprite != null
+          ? <SpriteIcon idx={t.sprite} size={compact ? 20 : 16} title={L(t.labelKey)} style={{ flexShrink: 0 }} />
+          : <span style={{ fontSize: compact ? 18 : 15, color: "var(--ink)", flexShrink: 0 }}>{t.glyph}</span>}
         {!compact && (
           <span style={{
             writingMode: "vertical-rl", textOrientation: "mixed",
@@ -559,6 +567,41 @@ function FakeIde({ dockSide, dockWidth }) {
 }
 
 // ===========================================================
+// 앱 내 알림 토스트 (뽀모도로 등 — OS 알림 실패 시에도 표시)
+// ===========================================================
+function AppNotifyToast() {
+  const [msg, setMsg] = useState(null);
+  useI18n();
+  useEffect(() => {
+    let timerId = null;
+    const h = (e) => {
+      const { title, body } = e.detail || {};
+      const text = body ? `${title} — ${body}` : (title || "");
+      if (!text) return;
+      setMsg(text);
+      clearTimeout(timerId);
+      timerId = setTimeout(() => setMsg(null), 4200);
+    };
+    window.addEventListener("app-notify", h);
+    return () => {
+      window.removeEventListener("app-notify", h);
+      clearTimeout(timerId);
+    };
+  }, []);
+  if (!msg) return null;
+  return (
+    <div style={{
+      position: "absolute", top: 34, left: 10, right: 10, zIndex: 50,
+      padding: "8px 10px", borderRadius: 10,
+      border: "1.1px solid var(--ink)", background: "var(--paper)",
+      boxShadow: "0 3px 0 var(--paper-3)",
+      fontFamily: "var(--hand)", fontSize: 13, color: "var(--ink)",
+      pointerEvents: "none",
+    }}>{msg}</div>
+  );
+}
+
+// ===========================================================
 // 헤더 — 제목/음악/타이머/디데이 각 한 줄 (별도 창 크롬 없음)
 // ===========================================================
 function HeaderDesktop() {
@@ -572,19 +615,51 @@ function SettingsView({ tweaks, setTweak }) {
   const t = tweaks || {};
   const set = setTweak || (() => {});
   const i18 = useI18n();
+  const [langOpen, setLangOpen] = useState(false);
+  const currentLang = i18.list().find(([code]) => code === i18.get()) || i18.list()[0];
   return (
     <div style={{ height: "100%", overflowY: "auto", overflowX: "hidden", padding: "14px 16px" }}>
       <SetSection label={L("set.lang")}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {i18.list().map(([code, name]) => (
-            <button key={code} onClick={() => i18.set(code)} style={{
-              all: "unset", cursor: "pointer", padding: "5px 12px", borderRadius: 99,
-              border: "1.1px solid var(--ink)",
-              background: i18.get() === code ? "var(--hi)" : "var(--paper)",
-              fontFamily: "var(--hand)", fontSize: 13, color: "var(--ink)",
-            }}>{name}</button>
-          ))}
-        </div>
+        <button onClick={() => setLangOpen(o => !o)} style={{
+          all: "unset", cursor: "pointer", boxSizing: "border-box", width: "100%",
+          padding: "7px 9px", borderRadius: 10,
+          border: "1.1px solid var(--ink)",
+          background: "rgba(255,255,255,0.68)", color: "var(--ink)",
+          display: "flex", alignItems: "center", gap: 7,
+        }}>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 10, fontWeight: 800 }}>{currentLang?.[2] || i18.get().toUpperCase()}</span>
+          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--hand)", fontSize: 13 }}>{currentLang?.[1] || i18.get()}</span>
+          <span style={{ fontFamily: "var(--mono)", fontSize: 10 }}>{langOpen ? "▴" : "▾"}</span>
+        </button>
+        {langOpen && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6, marginTop: 7 }}>
+            {i18.list().map(([code, name, short]) => {
+              const active = i18.get() === code;
+              return (
+                <button key={code} onClick={() => { i18.set(code); setLangOpen(false); }} style={{
+                  all: "unset", cursor: "pointer", boxSizing: "border-box",
+                  minWidth: 0, padding: "6px 8px", borderRadius: 10,
+                  border: active ? "1.2px solid var(--ink)" : "1px solid var(--ink-soft)",
+                  background: active ? "var(--hi)" : "rgba(255,255,255,0.62)",
+                  color: "var(--ink)",
+                  display: "flex", alignItems: "center", gap: 6,
+                }}>
+                  <span style={{
+                    flexShrink: 0, minWidth: 24, textAlign: "center",
+                    fontFamily: "var(--mono)", fontSize: 10, fontWeight: 800,
+                    padding: "1px 4px", borderRadius: 99,
+                    background: active ? "rgba(255,255,255,0.72)" : "var(--paper)",
+                    border: "1px solid rgba(40,51,63,0.18)",
+                  }}>{short || code.toUpperCase()}</span>
+                  <span style={{
+                    minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    fontFamily: "var(--hand)", fontSize: 12.5,
+                  }}>{name}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </SetSection>
 
       <SetSection label={L("set.size")}>
@@ -604,9 +679,15 @@ function SettingsView({ tweaks, setTweak }) {
       </SetSection>
 
       <SetSection label={L("set.roomTab")}>
-        <SetSeg value={(t.showRoomTab ?? true) ? "on" : "off"} onChange={v => set("showRoomTab", v === "on")}
+        <SetSeg value={(t.showRoomTab ?? false) ? "on" : "off"} onChange={v => set("showRoomTab", v === "on")}
           options={[["on", L("set.on")], ["off", L("set.off")]]} />
         <div className="sk-cap" style={{ marginTop: 6, fontSize: 11 }}>{L("set.roomTabHint")}</div>
+      </SetSection>
+
+      <SetSection label={L("set.pomodoro")}>
+        <SetSeg value={(t.showPomodoro ?? false) ? "on" : "off"} onChange={v => set("showPomodoro", v === "on")}
+          options={[["on", L("set.on")], ["off", L("set.off")]]} />
+        <div className="sk-cap" style={{ marginTop: 6, fontSize: 11 }}>{L("set.pomodoroHint")}</div>
       </SetSection>
 
       <SetSection label={L("set.dockHide")}>
@@ -694,7 +775,7 @@ function DecorateView({ tweaks, setTweak }) {
         <div style={{ padding: mine ? "3px 16px 3px 6px" : "3px 6px", textAlign: mine ? "left" : "center", fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink)", background: "var(--paper)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mine ? th.name : L(th.nameKey)}</div>
       </button>
       {mine && (
-        <button onClick={() => delMyTheme(i)} title="삭제" style={{
+        <button onClick={() => delMyTheme(i)} title={L("common.delete")} style={{
           all: "unset", cursor: "pointer", position: "absolute", top: 2, right: 2,
           width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center",
           background: "rgba(255,255,255,0.85)", border: "1px solid var(--ink)", fontSize: 9, color: "var(--ink)",
@@ -850,7 +931,7 @@ function StopRow({ stop, palette, onColor, onPos, onRemove, canRemove }) {
         <input type="range" min="0" max="100" value={stop.p} onChange={e => onPos(Number(e.target.value))}
           style={{ flex: 1, accentColor: "var(--ink)" }} />
         <span style={{ fontFamily: "var(--mono)", fontSize: 11, width: 34, textAlign: "right", color: "var(--ink-2)" }}>{stop.p}%</span>
-        {canRemove && <button onClick={onRemove} title="삭제" style={{ all: "unset", cursor: "pointer", color: "var(--ink-3)", fontSize: 13, padding: "0 2px" }}>✕</button>}
+        {canRemove && <button onClick={onRemove} title={L("common.delete")} style={{ all: "unset", cursor: "pointer", color: "var(--ink-3)", fontSize: 13, padding: "0 2px" }}>✕</button>}
       </div>
       {open && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 6, padding: 6, border: "1px solid var(--ink-soft)", borderRadius: 8, background: "var(--paper)", alignItems: "center" }}>

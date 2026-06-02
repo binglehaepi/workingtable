@@ -23,8 +23,8 @@
     return s;
   }
 
-  // 아바타 풀 — 동물 위주 (버디버디 미니미 느낌)
-  const AVATARS = ["🐰", "🐱", "🐶", "🦊", "🐻", "🐼", "🐸", "🐧", "🐹", "🦝", "🐯", "🦁"];
+  // 아바타 풀 — 앱에서 쓰는 픽셀 아이콘(Sprite-0002.png) 인덱스.
+  const AVATARS = Array.from({ length: 24 }, (_, i) => i);
   function randomAvatar() { return AVATARS[Math.floor(Math.random() * AVATARS.length)]; }
 
   function loadProfile() {
@@ -71,7 +71,6 @@
     currentRoomId: loadCurrentRoomId(),
     roomMeta: null,              // { id, name, inviteCode, ... }
     members: [],                 // [{ uid, displayName, avatar, status, workStartedAt, ... }]
-    recentClaps: [],             // [{ id, fromUid, toUid, ts }]  — 최근 60초만 유지
     initialized: false,
   };
   const subs = new Set();
@@ -85,19 +84,16 @@
   // ---- 구독 핸들 — 방이 바뀌면 끊고 다시 붙임 ----
   let unsubMembers = null;
   let unsubRoom = null;
-  let unsubClaps = null;
-  let clapsSince = Date.now();
 
   function detachAll() {
     if (unsubMembers) { unsubMembers(); unsubMembers = null; }
     if (unsubRoom) { unsubRoom(); unsubRoom = null; }
-    if (unsubClaps) { unsubClaps(); unsubClaps = null; }
   }
 
   function attachToRoom(roomId) {
     detachAll();
     if (!roomId) {
-      setS({ roomMeta: null, members: [], recentClaps: [] });
+      setS({ roomMeta: null, members: [] });
       return;
     }
     const fb = window.firebaseBridge;
@@ -106,25 +102,13 @@
       // 방이 사라졌으면 자동으로 나가기 상태
       if (!meta) {
         saveCurrentRoomId(null);
-        setS({ currentRoomId: null, members: [], recentClaps: [] });
+        setS({ currentRoomId: null, members: [] });
         detachAll();
       }
     });
     unsubMembers = fb.members.watch(roomId, (members) => {
       // 멤버 도착 → 완료 이벤트 디텍션은 다른 곳에서
       setS({ members });
-    });
-    clapsSince = Date.now() - 5000; // 최근 5초 이내 박수도 잡힐 수 있게 살짝 과거부터
-    unsubClaps = fb.claps.watchRecent(roomId, clapsSince, (clap) => {
-      // 60초 안 박수만 유지
-      const now = Date.now();
-      setS((s) => ({
-        recentClaps: [...s.recentClaps.filter((c) => now - c.ts < 60000), clap],
-      }));
-      // 60초 후 자동 제거 트리거
-      setTimeout(() => {
-        setS((s) => ({ recentClaps: s.recentClaps.filter((c) => c.id !== clap.id) }));
-      }, 60000);
     });
   }
 
@@ -170,7 +154,7 @@
     // 본인을 멤버로 등록
     await fb.rooms.join(room.id, hostUid, {
       displayName: state.profile.displayName || "나",
-      avatar: state.profile.avatar || randomAvatar(),
+      avatar: state.profile.avatar ?? randomAvatar(),
     });
     saveCurrentRoomId(room.id);
     setS({ currentRoomId: room.id });
@@ -188,7 +172,7 @@
     if (!room) throw new Error("ROOM_NOT_FOUND");
     await fb.rooms.join(room.id, fb.uid(), {
       displayName: state.profile.displayName || "나",
-      avatar: state.profile.avatar || randomAvatar(),
+      avatar: state.profile.avatar ?? randomAvatar(),
     });
     saveCurrentRoomId(room.id);
     setS({ currentRoomId: room.id });
@@ -231,13 +215,24 @@
   function setMyStatus(next) {
     if (!VALID_STATUSES.includes(next)) return;
     if (state.myStatus === next) return;
+    const now = Date.now();
+    if (now - (lastStatusSetAt || 0) < STATUS_COOLDOWN_MS) return;
+    lastStatusSetAt = now;
     saveMyStatus(next);
     setS({ myStatus: next });
   }
 
+  const STATUS_COOLDOWN_MS = 3000;
+  let lastStatusSetAt = 0;
+  const CLAP_COOLDOWN_MS = 5000;
+  const lastClapSentAt = new Map();
   function sendClap(toUid) {
     const fb = window.firebaseBridge;
     if (!fb || !state.currentRoomId || !fb.uid() || !toUid) return;
+    const key = `${state.currentRoomId}:${toUid}`;
+    const now = Date.now();
+    if (now - (lastClapSentAt.get(key) || 0) < CLAP_COOLDOWN_MS) return;
+    lastClapSentAt.set(key, now);
     fb.claps.send(state.currentRoomId, fb.uid(), toUid).catch(() => {});
   }
 
@@ -247,9 +242,16 @@
   const PATCH_DEBOUNCE_MS = 500;
   let pendingPatch = null;
   let pendingTimer = null;
-  function patchMyMember(patch) {
+  function patchMyMember(patch, logEntry = null) {
     const fb = window.firebaseBridge;
     if (!fb || !state.currentRoomId || !fb.uid()) return;
+    if (logEntry) {
+      const merged = { ...(pendingPatch || {}), ...(patch || {}) };
+      pendingPatch = null;
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+      fb.members.updateMineWithLog(state.currentRoomId, fb.uid(), merged, logEntry).catch(() => {});
+      return;
+    }
     if (!patch || Object.keys(patch).length === 0) {
       const merged = { ...(pendingPatch || {}) };
       pendingPatch = null;
