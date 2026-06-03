@@ -1,6 +1,6 @@
 {
   "name": "todoary",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "todoary — 데스크탑 투명 사이드바",
   "scripts": {
