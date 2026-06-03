@@ -1,4 +1,4 @@
-/* global React, TodayView, TodoView, MemoView, MailView, PromptView, AIView, RetroView, RoomView, SpriteIcon */
+/* global React, TodayView, TodoView, MemoView, MailView, PromptView, AIView, RetroView, RoomView, SpriteIcon, buildBackground, buildGradient, buildTodoTapeStyle, buildTapePaletteGradient, todoTapeClassName, DEFAULT_TODO_TAPE_PALETTE, DEFAULT_TODO_TAPE_PIN, DEFAULT_TODO_TAPE_BORDER_WIDTH, DEFAULT_TODO_TAPE_BORDER_COLOR, DEFAULT_TODO_TAPE_EDGE_FADE, DEFAULT_TODO_TAPE_PATTERN_COLOR, DEFAULT_TODO_TAPE_GRAD_FROM, DEFAULT_TODO_TAPE_GRAD_TO */
 // ===========================================================
 // 사이드 도크 v2 — 다이어리 인덱스 탭 + 뷰 전환
 // 도크 본체 + 옆에 삐죽 나오는 종이 탭들.
@@ -844,6 +844,37 @@ const DECO_PALETTE = [
 const DECO_ACCENTS = ["#fdff85", "#ffc7d4", "#c5e8d4", "#c8dffb", "#d8cdf5", "#ffd3b6", "#bafff0", "#ffb38a"];
 const DECO_DIRS = [["↖", 315], ["↑", 0], ["↗", 45], ["←", 270], ["↓", 180], ["→", 90], ["↙", 225], ["↘", 135]];
 
+// ---- 저장된 테이프 테마 스냅샷 ----
+function snapshotTapeThemeFromTweaks(t) {
+  const palette = (t.todoTapePalette && t.todoTapePalette.length)
+    ? t.todoTapePalette
+    : DEFAULT_TODO_TAPE_PALETTE;
+  return {
+    palette: [...palette],
+    pattern: t.todoTapePattern ?? "dots",
+    pinColor: t.todoTapePinColor ?? DEFAULT_TODO_TAPE_PIN,
+    borderWidth: t.todoTapeBorderWidth ?? DEFAULT_TODO_TAPE_BORDER_WIDTH,
+    borderColor: t.todoTapeBorderColor ?? DEFAULT_TODO_TAPE_BORDER_COLOR,
+    edgeFade: t.todoTapeEdgeFade ?? DEFAULT_TODO_TAPE_EDGE_FADE,
+    patternColor: t.todoTapePatternColor ?? DEFAULT_TODO_TAPE_PATTERN_COLOR,
+    gradFrom: t.todoTapeGradFrom ?? DEFAULT_TODO_TAPE_GRAD_FROM,
+    gradTo: t.todoTapeGradTo ?? DEFAULT_TODO_TAPE_GRAD_TO,
+  };
+}
+function tapeThemeToTweakPatch(th) {
+  return {
+    todoTapePalette: [...(th.palette || DEFAULT_TODO_TAPE_PALETTE)],
+    todoTapePattern: th.pattern ?? "dots",
+    todoTapePinColor: th.pinColor ?? DEFAULT_TODO_TAPE_PIN,
+    todoTapeBorderWidth: th.borderWidth ?? DEFAULT_TODO_TAPE_BORDER_WIDTH,
+    todoTapeBorderColor: th.borderColor ?? DEFAULT_TODO_TAPE_BORDER_COLOR,
+    todoTapeEdgeFade: th.edgeFade ?? DEFAULT_TODO_TAPE_EDGE_FADE,
+    todoTapePatternColor: th.patternColor ?? DEFAULT_TODO_TAPE_PATTERN_COLOR,
+    todoTapeGradFrom: th.gradFrom ?? DEFAULT_TODO_TAPE_GRAD_FROM,
+    todoTapeGradTo: th.gradTo ?? DEFAULT_TODO_TAPE_GRAD_TO,
+  };
+}
+
 function DecorateView({ tweaks, setTweak }) {
   const t = tweaks || {};
   const set = setTweak || (() => {});
@@ -875,6 +906,80 @@ function DecorateView({ tweaks, setTweak }) {
   };
   const delMyTheme = (i) => set("myThemes", myThemes.filter((_, idx) => idx !== i));
   const [sec, setSec] = useState("theme");
+  const tapePalette = (t.todoTapePalette && t.todoTapePalette.length)
+    ? t.todoTapePalette
+    : (DEFAULT_TODO_TAPE_PALETTE || []);
+  const tapePattern = t.todoTapePattern ?? "dots";
+  const tapePin = t.todoTapePinColor ?? (DEFAULT_TODO_TAPE_PIN || "#fff5b8");
+  const tapeBorderWidth = t.todoTapeBorderWidth ?? (DEFAULT_TODO_TAPE_BORDER_WIDTH ?? 0);
+  const tapeBorderColor = t.todoTapeBorderColor ?? (DEFAULT_TODO_TAPE_BORDER_COLOR || "var(--ink-soft)");
+  const tapeEdgeFade = t.todoTapeEdgeFade ?? (DEFAULT_TODO_TAPE_EDGE_FADE ?? true);
+  const tapePatternColor = t.todoTapePatternColor ?? (DEFAULT_TODO_TAPE_PATTERN_COLOR || "#ffffff");
+  const tapeGradFrom = t.todoTapeGradFrom ?? (DEFAULT_TODO_TAPE_GRAD_FROM || "#fff5f8");
+  const tapeGradTo = t.todoTapeGradTo ?? (DEFAULT_TODO_TAPE_GRAD_TO || "#ff9bb3");
+  const tapeGradPreview = buildTapePaletteGradient(tapeGradFrom, tapeGradTo, 12);
+  const setTapePalette = (next) => set("todoTapePalette", next);
+  const updTapeColor = (i, c) => setTapePalette(tapePalette.map((col, idx) => (idx === i ? c : col)));
+  const applyAllTapeColors = (c) => setTapePalette(tapePalette.map(() => c));
+  const applyTapeGradient = () => {
+    set("todoTapePalette", buildTapePaletteGradient(tapeGradFrom, tapeGradTo, 12));
+  };
+  const addTapeColor = () => {
+    if (tapePalette.length >= 12) return;
+    setTapePalette([...tapePalette, "#ffd3b6"]);
+  };
+  const removeTapeColor = (i) => {
+    if (tapePalette.length <= 2) return;
+    setTapePalette(tapePalette.filter((_, idx) => idx !== i));
+  };
+  const resetTape = () => {
+    set("todoTapePalette", [...(DEFAULT_TODO_TAPE_PALETTE || [])]);
+    set("todoTapePattern", "dots");
+    set("todoTapePinColor", DEFAULT_TODO_TAPE_PIN || "#fff5b8");
+    set("todoTapeBorderWidth", DEFAULT_TODO_TAPE_BORDER_WIDTH ?? 0);
+    set("todoTapeBorderColor", DEFAULT_TODO_TAPE_BORDER_COLOR || "var(--ink-soft)");
+    set("todoTapeEdgeFade", DEFAULT_TODO_TAPE_EDGE_FADE ?? true);
+    set("todoTapePatternColor", DEFAULT_TODO_TAPE_PATTERN_COLOR || "#ffffff");
+    set("todoTapeGradFrom", DEFAULT_TODO_TAPE_GRAD_FROM || "#fff5f8");
+    set("todoTapeGradTo", DEFAULT_TODO_TAPE_GRAD_TO || "#ff9bb3");
+  };
+  const tapeClass = todoTapeClassName(tapeEdgeFade);
+  const tapeStyleFor = (index, pinned) => buildTodoTapeStyle({
+    index, pinned, palette: tapePalette, pattern: tapePattern, patternColor: tapePatternColor,
+    pinColor: tapePin, borderColor: tapeBorderColor, borderWidth: tapeBorderWidth,
+  });
+
+  const myTapeThemes = t.myTapeThemes ?? [];
+  const saveMyTapeTheme = async () => {
+    const name = window.dialog
+      ? await window.dialog.prompt(L("deco.saveName"), L("deco.myTapeThemeName") + (myTapeThemes.length + 1))
+      : prompt(L("deco.saveName"), L("deco.myTapeThemeName") + (myTapeThemes.length + 1));
+    if (!name?.trim()) return;
+    set("myTapeThemes", [...myTapeThemes, { name: name.trim(), ...snapshotTapeThemeFromTweaks(t) }]);
+  };
+  const applyTapeTheme = (th) => set(tapeThemeToTweakPatch(th));
+  const delMyTapeTheme = (i) => set("myTapeThemes", myTapeThemes.filter((_, idx) => idx !== i));
+
+  const tapeThemeBtn = (th, i) => (
+    <div key={i} style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1.1px solid var(--ink)" }}>
+      <button type="button" onClick={() => applyTapeTheme(th)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}>
+        <div style={{ display: "flex", height: 26 }}>
+          {(th.palette || []).slice(0, 12).map((c, j) => (
+            <div key={j} style={{ flex: 1, background: c, minWidth: 2 }} />
+          ))}
+        </div>
+        <div style={{
+          padding: "3px 16px 3px 6px", fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink)",
+          background: "var(--paper)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+        }}>{th.name}</div>
+      </button>
+      <button type="button" onClick={() => delMyTapeTheme(i)} title={L("common.delete")} style={{
+        all: "unset", cursor: "pointer", position: "absolute", top: 2, right: 2,
+        width: 16, height: 16, borderRadius: "50%", display: "grid", placeItems: "center",
+        background: "rgba(255,255,255,0.85)", border: "1px solid var(--ink)", fontSize: 9, color: "var(--ink)",
+      }}>✕</button>
+    </div>
+  );
 
   const themeBtn = (th, i, mine) => (
     <div key={i} style={{ position: "relative", borderRadius: 10, overflow: "hidden", border: "1.1px solid var(--ink)" }}>
@@ -896,7 +1001,7 @@ function DecorateView({ tweaks, setTweak }) {
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
       {/* 상단 세그먼트 */}
       <div style={{ padding: "12px 14px 8px", flexShrink: 0 }}>
-        <SegTabs value={sec} onChange={setSec} options={[["theme", L("deco.theme")], ["bg", L("deco.bg")], ["color", L("deco.color")]]} />
+        <SegTabs value={sec} onChange={setSec} options={[["theme", L("deco.theme")], ["bg", L("deco.bg")], ["color", L("deco.color")], ["tape", L("deco.tape")]]} />
       </div>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: "4px 14px 16px" }}>
@@ -1007,12 +1112,337 @@ function DecorateView({ tweaks, setTweak }) {
             </SetSection>
           </>
         )}
+
+        {/* ── 할일 테이프 ── */}
+        {sec === "tape" && (
+          <>
+            <SetSection label={L("deco.tapePreview")}>
+              <TapePreviewEditor
+                palette={tapePalette}
+                pinColor={tapePin}
+                tapeClass={tapeClass}
+                tapeStyleFor={tapeStyleFor}
+                decoPalette={DECO_PALETTE}
+                onPickPalette={updTapeColor}
+                onPickPin={(c) => set("todoTapePinColor", c)}
+                onPickAllPalette={applyAllTapeColors}
+                onRemovePalette={removeTapeColor}
+                onAddPalette={addTapeColor}
+                onReset={resetTape}
+              />
+            </SetSection>
+            <SetSection label={L("deco.tapeGradient")}>
+              <div className="sk-cap" style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 8 }}>
+                {L("deco.tapeGradientHint")}
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                <div style={{ flex: 1, minWidth: 120 }}>
+                  <div className="sk-cap" style={{ fontSize: 10, color: "var(--ink-3)", marginBottom: 4 }}>{L("deco.tapeGradLight")}</div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                    {["#fff5f8", "#fffbd1", "#e9f8d8", "#ffffff"].map((c) => (
+                      <button key={c} onClick={() => set("todoTapeGradFrom", c)} style={{
+                        all: "unset", cursor: "pointer", width: 22, height: 22, borderRadius: 5, background: c,
+                        border: tapeGradFrom === c ? "2px solid var(--ink)" : "1px solid var(--ink-soft)",
+                      }} />
+                    ))}
+                    <ColorPick value={tapeGradFrom} onChange={(c) => set("todoTapeGradFrom", c)} />
+                  </div>
+                </div>
+                <span style={{ color: "var(--ink-3)", fontFamily: "var(--hand)", paddingBottom: 4 }}>→</span>
+                <div style={{ flex: 1, minWidth: 120 }}>
+                  <div className="sk-cap" style={{ fontSize: 10, color: "var(--ink-3)", marginBottom: 4 }}>{L("deco.tapeGradDark")}</div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                    {["#ff9bb3", "#ffb38a", "#d8cdf5", "#5b8fd6"].map((c) => (
+                      <button key={c} onClick={() => set("todoTapeGradTo", c)} style={{
+                        all: "unset", cursor: "pointer", width: 22, height: 22, borderRadius: 5, background: c,
+                        border: tapeGradTo === c ? "2px solid var(--ink)" : "1px solid var(--ink-soft)",
+                      }} />
+                    ))}
+                    <ColorPick value={tapeGradTo} onChange={(c) => set("todoTapeGradTo", c)} />
+                  </div>
+                </div>
+              </div>
+              <div style={{
+                display: "flex", gap: 1, height: 20, borderRadius: 6, overflow: "hidden",
+                border: "1.1px solid var(--ink-soft)", marginBottom: 8,
+              }}>
+                {tapeGradPreview.map((c, i) => (
+                  <div key={i} title={`${i + 1}`} style={{ flex: 1, background: c }} />
+                ))}
+              </div>
+              <button type="button" onClick={applyTapeGradient} style={{
+                all: "unset", cursor: "pointer", display: "block", width: "100%", boxSizing: "border-box", textAlign: "center",
+                padding: "7px 8px", borderRadius: 8,
+                border: "1.1px solid var(--ink)", background: "linear-gradient(180deg, var(--point-soft), var(--point))",
+                fontFamily: "var(--hand)", fontSize: 13, fontWeight: 700, color: "var(--ink)",
+              }}>{L("deco.tapeGradApply")}</button>
+            </SetSection>
+            <SetSection label={L("deco.tapeEdgeFade")}>
+              <SetSeg
+                value={tapeEdgeFade ? "on" : "off"}
+                onChange={(v) => set("todoTapeEdgeFade", v === "on")}
+                options={[["on", L("set.on")], ["off", L("set.off")]]}
+              />
+            </SetSection>
+            <SetSection label={L("deco.tapePattern")}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {[["dots", "deco.tapePatternDots"], ["diag", "deco.tapePatternDiag"], ["gingham", "deco.tapePatternGingham"], ["none", "deco.tapePatternNone"]].map(([v, k]) => (
+                  <button key={v} onClick={() => set("todoTapePattern", v)} style={{
+                    all: "unset", cursor: "pointer", padding: "5px 12px", borderRadius: 99,
+                    border: "1.1px solid var(--ink)", background: tapePattern === v ? "var(--hi)" : "var(--paper)",
+                    fontFamily: "var(--hand)", fontSize: 13, color: "var(--ink)",
+                  }}>{L(k)}</button>
+                ))}
+              </div>
+              {tapePattern !== "none" && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="sk-cap" style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 6 }}>
+                    {L("deco.tapePatternColor")}
+                  </div>
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                    {["#ffffff", "#fdff85", "#ffc7d4", "#c8dffb", "#28333f"].map((c) => (
+                      <button key={c} onClick={() => set("todoTapePatternColor", c)} style={{
+                        all: "unset", cursor: "pointer", width: 24, height: 24, borderRadius: 6, background: c,
+                        border: tapePatternColor === c ? "2.6px solid var(--ink)" : "1.1px solid var(--ink)",
+                        boxShadow: tapePatternColor === c ? "0 0 0 2px var(--paper-3)" : "none",
+                      }} />
+                    ))}
+                    <ColorPick value={tapePatternColor} onChange={(c) => set("todoTapePatternColor", c)} />
+                  </div>
+                </div>
+              )}
+            </SetSection>
+            <SetSection label={L("deco.tapeBorder")}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: tapeBorderWidth > 0 ? 8 : 0 }}>
+                {[
+                  [0, "deco.tapeBorderNone"],
+                  [0.8, "deco.tapeBorderNormal"],
+                  [1.2, "deco.tapeBorderBold"],
+                ].map(([w, k]) => (
+                  <button key={w} onClick={() => set("todoTapeBorderWidth", w)} style={{
+                    all: "unset", cursor: "pointer", padding: "5px 12px", borderRadius: 99,
+                    border: "1.1px solid var(--ink)", background: tapeBorderWidth === w ? "var(--hi)" : "var(--paper)",
+                    fontFamily: "var(--hand)", fontSize: 13, color: "var(--ink)",
+                  }}>{L(k)}</button>
+                ))}
+              </div>
+              {tapeBorderWidth > 0 && (
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                  {[
+                    ["var(--ink-soft)", L("deco.tapeBorderSoft")],
+                    ["var(--ink)", L("deco.tapeBorderInk")],
+                  ].map(([c, lbl]) => (
+                    <button key={c} onClick={() => set("todoTapeBorderColor", c)} title={lbl} style={{
+                      all: "unset", cursor: "pointer", width: 28, height: 28, borderRadius: 6,
+                      background: c === "var(--ink-soft)" ? "#cfd6e0" : "#28333f",
+                      border: tapeBorderColor === c ? "2.6px solid var(--ink)" : "1.1px solid var(--ink)",
+                      boxShadow: tapeBorderColor === c ? "0 0 0 2px var(--paper-3)" : "none",
+                    }} />
+                  ))}
+                  {DECO_ACCENTS.slice(0, 4).map((c) => (
+                    <button key={c} onClick={() => set("todoTapeBorderColor", c)} style={{
+                      all: "unset", cursor: "pointer", width: 24, height: 24, borderRadius: 6, background: c,
+                      border: tapeBorderColor === c ? "2.6px solid var(--ink)" : "1.1px solid var(--ink)",
+                      boxShadow: tapeBorderColor === c ? "0 0 0 2px var(--paper-3)" : "none",
+                    }} />
+                  ))}
+                  <ColorPick
+                    value={tapeBorderColor.startsWith("#") ? tapeBorderColor : "#cfd6e0"}
+                    onChange={(c) => set("todoTapeBorderColor", c)}
+                  />
+                </div>
+              )}
+            </SetSection>
+            <SetSection label={`${L("deco.myTapeTheme")} · ${myTapeThemes.length}`}>
+              {myTapeThemes.length > 0 && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 8 }}>
+                  {myTapeThemes.map((th, i) => tapeThemeBtn(th, i))}
+                </div>
+              )}
+              <button type="button" onClick={saveMyTapeTheme} style={{
+                all: "unset", cursor: "pointer", display: "block", width: "100%", boxSizing: "border-box", textAlign: "center",
+                padding: "8px", borderRadius: 10,
+                border: "1.1px solid var(--ink)", background: "linear-gradient(180deg, var(--point-soft), var(--point))",
+                fontFamily: "var(--hand)", fontWeight: 700, fontSize: 13, color: "var(--ink)",
+              }}>{L("deco.saveTapeTheme")}</button>
+            </SetSection>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// 꾸미기 상단 세그먼트 (테마 / 배경 / 색상)
+// 꾸미기 — 할일 테이프 미리보기 (탭 클릭으로 색 편집)
+function TapePreviewEditor({
+  palette, pinColor, tapeClass, tapeStyleFor, decoPalette,
+  onPickPalette, onPickPin, onPickAllPalette, onRemovePalette, onAddPalette, onReset,
+}) {
+  const [picker, setPicker] = useState(null);
+  const [batchMode, setBatchMode] = useState(false);
+  const [resetAsk, setResetAsk] = useState(false);
+
+  const confirmBtn = (accent) => ({
+    all: "unset", cursor: "pointer", flex: 1, textAlign: "center",
+    padding: "6px 8px", borderRadius: 8,
+    border: "1.1px solid var(--ink)",
+    background: accent ? "linear-gradient(180deg, var(--point-soft), var(--point))" : "var(--paper)",
+    fontFamily: "var(--hand)", fontSize: 12, fontWeight: accent ? 700 : 400, color: "var(--ink)",
+  });
+
+  const pickerColor = picker?.kind === "pin"
+    ? pinColor
+    : (picker?.kind === "palette" ? palette[picker.index] : "#ffd3b6");
+  const canBatch = picker?.kind === "palette";
+
+  const applyColor = (c) => {
+    if (batchMode && canBatch) onPickAllPalette(c);
+    else if (picker?.kind === "pin") onPickPin(c);
+    else if (picker?.kind === "palette") onPickPalette(picker.index, c);
+  };
+
+  const stripBtn = {
+    all: "unset", cursor: "pointer", width: "100%", textAlign: "left", position: "relative",
+  };
+  const stripStyle = (active, tapeStyle) => ({
+    height: 24,
+    borderRadius: 2,
+    display: "flex",
+    alignItems: "center",
+    padding: "0 8px",
+    boxSizing: "border-box",
+    outline: active ? "2px solid var(--point)" : "none",
+    outlineOffset: 0,
+    ...tapeStyle,
+  });
+
+  return (
+    <div>
+      <div className="sk-cap" style={{ fontSize: 11, color: "var(--ink-3)", marginBottom: 6 }}>
+        {L("deco.tapePreviewHint")}
+      </div>
+      <div style={{
+        padding: "8px 8px 6px",
+        borderRadius: 10,
+        border: "1.1px solid var(--ink-soft)",
+        background: "color-mix(in srgb, var(--paper) 90%, var(--blue-soft))",
+      }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        {palette.map((c, i) => {
+          const active = picker?.kind === "palette" && picker.index === i;
+          return (
+            <div key={i} style={{ position: "relative" }}>
+              <button
+                type="button"
+                onClick={() => setPicker(active ? null : { kind: "palette", index: i })}
+                style={stripBtn}
+                title={L("deco.pickColor")}
+              >
+                <div className={tapeClass || "tape"} style={stripStyle(active, tapeStyleFor(i, false))}>
+                  <span style={{
+                    fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-2)", minWidth: 14,
+                  }}>{i + 1}</span>
+                </div>
+              </button>
+              {palette.length > 2 && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onRemovePalette(i); if (active) setPicker(null); }}
+                  title={L("common.delete")}
+                  style={{
+                    all: "unset", cursor: "pointer", position: "absolute", top: -3, right: -2, zIndex: 2,
+                    width: 13, height: 13, borderRadius: "50%", display: "grid", placeItems: "center",
+                    background: "rgba(255,255,255,0.92)", border: "1px solid var(--ink)", fontSize: 7, color: "var(--ink)",
+                  }}
+                >✕</button>
+              )}
+            </div>
+          );
+        })}
+        <button
+          type="button"
+          onClick={() => setPicker(picker?.kind === "pin" ? null : { kind: "pin" })}
+          style={stripBtn}
+          title={L("deco.tapePinLabel")}
+        >
+          <div className={tapeClass || "tape"} style={stripStyle(picker?.kind === "pin", tapeStyleFor(0, true))}>
+            <span style={{ fontFamily: "var(--hand)", fontSize: 11, color: "var(--ink)" }}>📌</span>
+          </div>
+        </button>
+        </div>
+      </div>
+
+      {picker && (
+        <div style={{
+          marginTop: 10, padding: 8, borderRadius: 10,
+          border: "1.1px solid var(--ink-soft)", background: "var(--paper)",
+        }}>
+          {canBatch && (
+            <div style={{ marginBottom: 8 }}>
+              <SetSeg
+                value={batchMode ? "all" : "one"}
+                onChange={(v) => setBatchMode(v === "all")}
+                options={[["one", L("deco.tapePickOne")], ["all", L("deco.tapePickAll")]]}
+              />
+            </div>
+          )}
+          <TapeColorPopover
+            color={pickerColor}
+            decoPalette={decoPalette}
+            onPick={applyColor}
+          />
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+        {palette.length < 12 && (
+          <button type="button" onClick={onAddPalette} style={{
+            all: "unset", cursor: "pointer", flex: 1, minWidth: 100, textAlign: "center",
+            padding: "6px 8px", borderRadius: 8, border: "1.1px dashed var(--ink-2)",
+            fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink-2)",
+          }}>{L("deco.tapeAddColor")}</button>
+        )}
+        {resetAsk ? (
+          <div style={{ flex: 1, minWidth: "100%" }}>
+            <div className="sk-cap" style={{ fontSize: 11, color: "var(--ink-2)", marginBottom: 6, textAlign: "center" }}>
+              {L("deco.tapeResetConfirm")}
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button type="button" onClick={() => { onReset(); setResetAsk(false); setPicker(null); }} style={confirmBtn(true)}>
+                {L("common.yes")}
+              </button>
+              <button type="button" onClick={() => setResetAsk(false)} style={confirmBtn(false)}>
+                {L("common.no")}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" onClick={() => setResetAsk(true)} style={{
+            all: "unset", cursor: "pointer", flex: 1, minWidth: 100, textAlign: "center",
+            padding: "6px 8px", borderRadius: 8, border: "1.1px solid var(--ink-soft)",
+            fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink-2)",
+          }}>{L("deco.tapeReset")}</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TapeColorPopover({ color, decoPalette, onPick }) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}>
+      {decoPalette.map((col) => (
+        <button key={col} type="button" onClick={() => onPick(col)} style={{
+          all: "unset", cursor: "pointer", width: 22, height: 22, borderRadius: 5, background: col,
+          border: color === col ? "2px solid var(--ink)" : "1px solid var(--ink-soft)",
+        }} />
+      ))}
+      <ColorPick value={color} onChange={onPick} />
+    </div>
+  );
+}
+
+// 꾸미기 상단 세그먼트 (테마 / 배경 / 색상 / 테이프)
 function SegTabs({ value, onChange, options }) {
   return (
     <div style={{ display: "flex", gap: 4, background: "var(--paper-2)", borderRadius: 99, padding: 3, border: "1.1px solid var(--ink)" }}>

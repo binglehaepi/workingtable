@@ -627,6 +627,40 @@ function buildGradient(type, angle, stops) {
   return `linear-gradient(${angle ?? 180}deg, ${list})`;
 }
 
+// ---- 테이프 팔레트 1~N 그라데이션 (연한색 → 진한색) ----
+const TODO_TAPE_GRAD_STEPS = 12;
+const DEFAULT_TODO_TAPE_GRAD_FROM = "#fff5f8";
+const DEFAULT_TODO_TAPE_GRAD_TO = "#ff9bb3";
+function parseHexRgb(hex) {
+  const raw = String(hex || "#ffffff").replace("#", "");
+  const h = raw.length === 3
+    ? raw.split("").map((ch) => ch + ch).join("")
+    : raw.padEnd(6, "0").slice(0, 6);
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+function rgbToHex(r, g, b) {
+  const clamp = (n) => Math.max(0, Math.min(255, Math.round(n)));
+  return `#${[r, g, b].map((v) => clamp(v).toString(16).padStart(2, "0")).join("")}`;
+}
+function lerpHexColor(from, to, t) {
+  const a = parseHexRgb(from);
+  const b = parseHexRgb(to);
+  const p = Math.max(0, Math.min(1, t));
+  return rgbToHex(
+    a.r + (b.r - a.r) * p,
+    a.g + (b.g - a.g) * p,
+    a.b + (b.b - a.b) * p,
+  );
+}
+function buildTapePaletteGradient(from, to, count = TODO_TAPE_GRAD_STEPS) {
+  const n = Math.max(2, Math.min(TODO_TAPE_GRAD_STEPS, count || TODO_TAPE_GRAD_STEPS));
+  return Array.from({ length: n }, (_, i) => lerpHexColor(from, to, i / (n - 1)));
+}
+
 // 도형(하트/별) 배경 — 블러 처리한 SVG를 background 로. shape="none"이면 일반 그라데이션.
 function buildBackground(type, angle, stops, shape) {
   const arr = (stops && stops.length >= 2) ? stops : [{ c: "#a9cdf5", p: 0 }, { c: "#ffffff", p: 100 }];
@@ -678,14 +712,71 @@ const TAPE_COLORS = [
   ["#ffd9e6", "dots"], ["#fdffc0", "diag"], ["#d9f0c0", "dots"], ["#ffd0d8", "diag"],
   ["#c6ecd7", "gingham"], ["#e2d6f5", "dots"], ["#cfe2fa", "dots"], ["#f3e8c8", "gingham"],
 ];
-const TAPE_PAT = {
-  dots: "radial-gradient(rgba(255,255,255,.7) 1.6px, transparent 1.7px) 0 0 / 9px 9px",
-  diag: "repeating-linear-gradient(45deg, rgba(255,255,255,.5) 0 2px, transparent 2px 7px)",
-  gingham: "repeating-linear-gradient(0deg, rgba(255,255,255,.4) 0 4px, transparent 4px 8px), repeating-linear-gradient(90deg, rgba(255,255,255,.4) 0 4px, transparent 4px 8px)",
-};
+const TAPE_PAT_OPACITY = { dots: 0.7, diag: 0.5, gingham: 0.4 };
+function patternRgba(hex, alpha) {
+  const raw = String(hex || "#ffffff").replace("#", "");
+  const h = raw.length === 3
+    ? raw.split("").map((ch) => ch + ch).join("")
+    : raw.padEnd(6, "0").slice(0, 6);
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+function buildTapePattern(pattern, patternColor) {
+  if (!pattern || pattern === "none") return "";
+  const a = TAPE_PAT_OPACITY[pattern] ?? 0.6;
+  const c = patternRgba(patternColor, a);
+  if (pattern === "dots") {
+    return `radial-gradient(${c} 1.6px, transparent 1.7px) 0 0 / 9px 9px`;
+  }
+  if (pattern === "diag") {
+    return `repeating-linear-gradient(45deg, ${c} 0 2px, transparent 2px 7px)`;
+  }
+  if (pattern === "gingham") {
+    return `repeating-linear-gradient(0deg, ${c} 0 4px, transparent 4px 8px), repeating-linear-gradient(90deg, ${c} 0 4px, transparent 4px 8px)`;
+  }
+  return "";
+}
+const DEFAULT_TODO_TAPE_PALETTE = [
+  "#ffeaf2", "#fffbd1", "#e9f8d8", "#fde0e5", "#dcf4e3",
+  "#efe8f8", "#dfeaf9", "#fbf0d8", "#ffe9da", "#e3f3ff",
+];
+const DEFAULT_TODO_TAPE_PIN = "#fff5b8";
+const DEFAULT_TODO_TAPE_BORDER_WIDTH = 0;
+const DEFAULT_TODO_TAPE_BORDER_COLOR = "var(--ink-soft)";
+const DEFAULT_TODO_TAPE_EDGE_FADE = true;
+const DEFAULT_TODO_TAPE_PATTERN_COLOR = "#ffffff";
+function buildTodoTapeStyle({
+  index = 0,
+  pinned = false,
+  palette,
+  pattern = "dots",
+  patternColor,
+  pinColor,
+  borderColor,
+  borderWidth,
+} = {}) {
+  const colors = (palette && palette.length) ? palette : DEFAULT_TODO_TAPE_PALETTE;
+  const pat = buildTapePattern(pattern, patternColor ?? DEFAULT_TODO_TAPE_PATTERN_COLOR);
+  const pin = pinColor || DEFAULT_TODO_TAPE_PIN;
+  const base = pinned
+    ? pin
+    : colors[((index % colors.length) + colors.length) % colors.length];
+  const style = !pat ? { background: base } : { background: `${pat}, ${base}` };
+  const w = Number(borderWidth ?? DEFAULT_TODO_TAPE_BORDER_WIDTH);
+  if (w > 0) {
+    style.border = `${w}px solid ${borderColor || DEFAULT_TODO_TAPE_BORDER_COLOR}`;
+  }
+  return style;
+}
+function todoTapeClassName(edgeFade) {
+  return edgeFade !== false ? "tape" : "tape tape-no-fade";
+}
 function tapeStyle(i) {
   const [c, p] = TAPE_COLORS[((i % TAPE_COLORS.length) + TAPE_COLORS.length) % TAPE_COLORS.length];
-  return { background: `${TAPE_PAT[p]}, ${c}` };
+  const pat = buildTapePattern(p, DEFAULT_TODO_TAPE_PATTERN_COLOR);
+  return pat ? { background: `${pat}, ${c}` } : { background: c };
 }
 
 if (!document.getElementById("tape-css")) {
@@ -698,6 +789,10 @@ if (!document.getElementById("tape-css")) {
       box-shadow: 0 2px 3px rgba(40,51,63,.16);
       -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 9px, #000 calc(100% - 9px), transparent 100%);
               mask-image: linear-gradient(90deg, transparent 0, #000 9px, #000 calc(100% - 9px), transparent 100%);
+    }
+    .tape.tape-no-fade {
+      -webkit-mask-image: none;
+              mask-image: none;
     }
   `;
   document.head.appendChild(s);
@@ -721,7 +816,19 @@ if (!document.getElementById("editable-placeholder-css")) {
 window.ViewHeader = ViewHeader;
 window.SplitPane = SplitPane;
 window.tapeStyle = tapeStyle;
+window.buildTodoTapeStyle = buildTodoTapeStyle;
+window.todoTapeClassName = todoTapeClassName;
+window.buildTapePattern = buildTapePattern;
+window.DEFAULT_TODO_TAPE_PALETTE = DEFAULT_TODO_TAPE_PALETTE;
+window.DEFAULT_TODO_TAPE_PIN = DEFAULT_TODO_TAPE_PIN;
+window.DEFAULT_TODO_TAPE_BORDER_WIDTH = DEFAULT_TODO_TAPE_BORDER_WIDTH;
+window.DEFAULT_TODO_TAPE_BORDER_COLOR = DEFAULT_TODO_TAPE_BORDER_COLOR;
+window.DEFAULT_TODO_TAPE_EDGE_FADE = DEFAULT_TODO_TAPE_EDGE_FADE;
+window.DEFAULT_TODO_TAPE_PATTERN_COLOR = DEFAULT_TODO_TAPE_PATTERN_COLOR;
 window.buildGradient = buildGradient;
+window.buildTapePaletteGradient = buildTapePaletteGradient;
+window.DEFAULT_TODO_TAPE_GRAD_FROM = DEFAULT_TODO_TAPE_GRAD_FROM;
+window.DEFAULT_TODO_TAPE_GRAD_TO = DEFAULT_TODO_TAPE_GRAD_TO;
 window.buildBackground = buildBackground;
 window.TodaySummary = TodaySummary;
 window.Divider = Divider;

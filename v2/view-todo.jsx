@@ -1,4 +1,4 @@
-/* global React, diary, SplitPane, InlineAdd, DelBtn, openExternalUrl, PomodoroBarButton */
+/* global React, diary, SplitPane, InlineAdd, DelBtn, openExternalUrl, PomodoroBarButton, buildTodoTapeStyle, todoTapeClassName */
 // ===========================================================
 // 할 일 — 위(2/3): 입력 + 모든 할 일
 //          아래(1/3): 핀(!) · 반복 · 마감일 설정한 할 일 자동 표시
@@ -168,18 +168,6 @@ async function readClipboardText() {
   return "";
 }
 
-// 연한 파스텔 마스킹테이프 색 (행마다 순환)
-const LIGHT_TAPE = [
-  "#ffeaf2", "#fffbd1", "#e9f8d8", "#fde0e5", "#dcf4e3",
-  "#efe8f8", "#dfeaf9", "#fbf0d8", "#ffe9da", "#e3f3ff",
-];
-const LIGHT_PAT = "radial-gradient(rgba(255,255,255,.7) 1.2px, transparent 1.3px) 0 0 / 10px 10px";
-function lightTape(i, pinned) {
-  if (pinned) return { background: `${LIGHT_PAT}, #fff5b8` };
-  const c = LIGHT_TAPE[((i % LIGHT_TAPE.length) + LIGHT_TAPE.length) % LIGHT_TAPE.length];
-  return { background: `${LIGHT_PAT}, ${c}` };
-}
-
 function recLabel(r) {
   if (!r) return "";
   if (r.frequency === "daily") return L("todo.recDaily");
@@ -202,6 +190,23 @@ function calSnap(h) {
 
 function TodoView({ tweaks } = {}) {
   const showPomodoro = tweaks?.showPomodoro ?? true;
+  const tapeOpts = React.useMemo(() => ({
+    palette: tweaks?.todoTapePalette,
+    pattern: tweaks?.todoTapePattern ?? "dots",
+    patternColor: tweaks?.todoTapePatternColor,
+    pinColor: tweaks?.todoTapePinColor,
+    borderColor: tweaks?.todoTapeBorderColor,
+    borderWidth: tweaks?.todoTapeBorderWidth,
+    edgeFade: tweaks?.todoTapeEdgeFade,
+  }), [
+    tweaks?.todoTapePalette,
+    tweaks?.todoTapePattern,
+    tweaks?.todoTapePatternColor,
+    tweaks?.todoTapePinColor,
+    tweaks?.todoTapeBorderColor,
+    tweaks?.todoTapeBorderWidth,
+    tweaks?.todoTapeEdgeFade,
+  ]);
   const { state, actions } = diary.useDiary();
   const [selId, setSel] = useState(null);
   const [schedulingId, setSchedulingId] = useState(null);
@@ -458,7 +463,8 @@ function TodoView({ tweaks } = {}) {
           {list.map((t, i) => (
             <TodoRow key={t.id} t={t} actions={actions} recRule={recById[t.recurrenceId]} i={i}
               selected={selId === t.id} onPick={onPick} completionDay={completionContextDay}
-              schedulingActive={schedulingId === t.id} onScheduleDate={startSchedule} />
+              schedulingActive={schedulingId === t.id} onScheduleDate={startSchedule}
+              tapeOpts={tapeOpts} />
           ))}
           {list.length === 0 && (
             <div className="sk-cap" style={{ padding: "4px 2px" }}>
@@ -929,7 +935,7 @@ function PeriodConfirmBar({ rangeLabel, onYes, onNo }) {
 // • compact:  중요·예정 트레이용 (드래그 없음)
 // • t.done:   취소선 + 회색
 // • subTasks: 접히는 하위 목록 + 진행도 (n/m) 뱃지
-function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false, onPick, completionDay, schedulingActive = false, onScheduleDate }) {
+function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false, onPick, completionDay, schedulingActive = false, onScheduleDate, tapeOpts }) {
   const markDay = completionDay || diary.today();
   const toggleOpts = { completionDay: markDay };
   // 서브태스크 — 항목이 있으면 기본 펼침, 없으면 접힘. 사용자가 토글하면 그 상태 유지.
@@ -1022,9 +1028,9 @@ function TodoRow({ t, actions, recRule, i = 0, compact = false, selected = false
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
-      className="tape"
+      className={todoTapeClassName(tapeOpts?.edgeFade)}
       style={{
-        ...lightTape(i, t.pinned),
+        ...buildTodoTapeStyle({ index: i, pinned: t.pinned, ...(tapeOpts || {}) }),
         padding: compact ? "5px 14px" : "6px 10px 6px 4px",
         marginBottom: compact ? 5 : 6,
         outline: dropMode === "into" ? "2px solid var(--point)" : "none",
