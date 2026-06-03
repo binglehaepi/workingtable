@@ -1,4 +1,4 @@
-/* global React, diary */
+/* global React, diary, useI18n, L */
 // ===========================================================
 // 작업 시간 자동 트래커 + 회고 자동 모달
 //
@@ -166,6 +166,7 @@ function WorkSessionBootstrap() {
 
 // ---- 회고 모달 (전역) ----
 function RetroModal() {
+  useI18n();
   const [open, setOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
@@ -225,7 +226,7 @@ function RetroModal() {
         bad:  r?.bad?.trim()  ? r.bad  : draft.bad,
       });
     } catch (e) {
-      setAiError(e.message || "실패");
+      setAiError(e.message || L("common.fail"));
     } finally {
       setAiLoading(false);
     }
@@ -257,21 +258,21 @@ function RetroModal() {
         }}>
           <span style={{ fontSize: 9, color: "var(--pink)", letterSpacing: 1 }}>♡ ♡ ♡</span>
           <span style={{ fontFamily: "var(--hand)", fontSize: 15, fontWeight: 700, flex: 1 }}>
-            오늘 작업 마치기
+            {L("finish.title")}
           </span>
           <button onClick={() => setOpen(false)} className="xp-btn close">×</button>
         </div>
 
         {/* 본문 */}
         <div style={{ padding: 16 }}>
-          <div className="sk-cap">{diary.fmtKDate(today)} · {project?.name ?? "프로젝트"}</div>
+          <div className="sk-cap">{diary.fmtKDate(today)} · {project?.name ?? L("proj.fallback")}</div>
           <div style={{ display: "flex", gap: 14, marginTop: 8, marginBottom: 14, fontFamily: "var(--hand)", fontSize: 14, color: "var(--ink-2)" }}>
-            <span>⏱ <strong style={{ color: "var(--ink)", fontSize: 16 }}>{minutes}m</strong> 작업</span>
-            <span>✓ <strong style={{ color: "var(--ink)", fontSize: 16 }}>{doneToday.length}</strong>개 완료</span>
+            <span>{L("finish.workMin", { minutes })}</span>
+            <span>{L("finish.doneCount", { n: doneToday.length })}</span>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <div className="sk-label" style={{ flex: 1 }}>오늘 한 줄</div>
+            <div className="sk-label" style={{ flex: 1 }}>{L("finish.oneLine")}</div>
             <button onClick={runAiDraft} disabled={aiLoading} style={{
               all: "unset", cursor: aiLoading ? "wait" : "pointer",
               padding: "2px 10px", borderRadius: 99,
@@ -279,7 +280,7 @@ function RetroModal() {
               background: aiLoading ? "var(--paper-2)" : "var(--lavender-soft)",
               fontFamily: "var(--hand)", fontSize: 12, color: "var(--ink)",
             }}>
-              {aiLoading ? "생각 중…" : "✨ AI 초안"}
+              {aiLoading ? L("finish.aiThinking") : L("finish.aiDraft")}
             </button>
           </div>
           {aiError && (
@@ -288,7 +289,7 @@ function RetroModal() {
           <textarea
             value={r?.text ?? ""}
             onChange={(e) => save({ text: e.target.value })}
-            placeholder="오늘 어땠나요? 한 줄도 충분해요."
+            placeholder={L("retro.textPh")}
             rows={2}
             autoFocus
             style={modalInput}
@@ -296,21 +297,21 @@ function RetroModal() {
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
             <div>
-              <div className="sk-label" style={{ marginBottom: 6 }}>👍 잘된 것</div>
+              <div className="sk-label" style={{ marginBottom: 6 }}>{L("retro.goodLabel")}</div>
               <textarea
                 value={r?.good ?? ""}
                 onChange={(e) => save({ good: e.target.value })}
-                placeholder="(선택)"
+                placeholder={L("retro.optional")}
                 rows={2}
                 style={modalInput}
               />
             </div>
             <div>
-              <div className="sk-label" style={{ marginBottom: 6 }}>👎 막힌 것</div>
+              <div className="sk-label" style={{ marginBottom: 6 }}>{L("retro.badLabel")}</div>
               <textarea
                 value={r?.bad ?? ""}
                 onChange={(e) => save({ bad: e.target.value })}
-                placeholder="(선택)"
+                placeholder={L("retro.optional")}
                 rows={2}
                 style={modalInput}
               />
@@ -320,7 +321,7 @@ function RetroModal() {
           {/* 오늘 완료한 일 미리보기 */}
           {doneToday.length > 0 && (
             <div style={{ marginTop: 14 }}>
-              <div className="sk-label" style={{ marginBottom: 6 }}>오늘 끝낸 일</div>
+              <div className="sk-label" style={{ marginBottom: 6 }}>{L("finish.doneToday")}</div>
               <div className="sk-box" style={{
                 padding: 8, background: "var(--paper-2)",
                 fontFamily: "var(--hand)", fontSize: 13, color: "var(--ink-2)",
@@ -334,9 +335,9 @@ function RetroModal() {
           )}
 
           <div style={{ display: "flex", gap: 8, marginTop: 18, justifyContent: "flex-end" }}>
-            <button onClick={() => setOpen(false)} style={btn}>닫기 (계속 작업)</button>
+            <button onClick={() => setOpen(false)} style={btn}>{L("finish.closeContinue")}</button>
             <button onClick={finish} style={{ ...btn, background: "var(--mint)" }}>
-              ✓ 오늘 마치기
+              {L("finish.finishToday")}
             </button>
           </div>
         </div>

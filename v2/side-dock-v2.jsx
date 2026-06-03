@@ -198,37 +198,63 @@ function EdgeResizers() {
 function tabHeaderInfo(active, state) {
   const sel = diary.select;
   const project = sel.currentProject(state);
+  const autosave = L("header.autosave");
+  const sortHint = L("header.sortByUse");
+  const replyHint = L("header.replyHint");
+  const retroHint = L("header.retroHint");
   switch (active) {
     case "today": {
       const notDone = sel.todosForCurrent(state).filter(t => !t.done).length;
       const minutes = sel.workMinutesToday(state);
       const unreplied = (state.emails ?? []).filter(e => !e.replied).length;
-      return { ttl: `오늘 — ${diary.fmtKDate(diary.today())}`, sub: `작업 ${minutes}m · ${notDone}개 할 일 · ${unreplied}개 미답 메일` };
+      return {
+        ttl: L("header.todayTitle", { date: diary.fmtKDate(diary.today()) }),
+        sub: L("header.todaySub", { minutes, todos: notDone, mail: unreplied }),
+      };
     }
+    case "cal":
+      return { ttl: L("tab.week"), sub: L("header.calSub", { autosave }) };
     case "todo": {
       const items = sel.todosForCurrent(state);
       const notDone = items.filter(t => !t.done).length;
       const hot = items.filter(t => t.hot && !t.done).length;
-      return { ttl: "할 일", sub: `${notDone}개 남음 · ${hot}개 급함` };
+      return {
+        ttl: L("tab.todo"),
+        sub: L("header.todoSub", { left: notDone, hot }),
+      };
     }
     case "memo": {
       const cnt = (sel.memosForCurrent ? sel.memosForCurrent(state) : []).length;
-      return { ttl: "메모", sub: `${project?.name ?? "프로젝트"} · ${cnt}개 · 자동 저장` };
+      return {
+        ttl: L("tab.memo"),
+        sub: L("header.memoSub", {
+          project: project?.name ?? L("proj.fallback"),
+          count: cnt,
+          autosave,
+        }),
+      };
     }
     case "prompt":
-      return { ttl: "프롬프트 함", sub: `${(state.prompts ?? []).length}개 보관됨 · 자주 쓰는 순` };
+      return {
+        ttl: L("header.promptTitle"),
+        sub: L("header.promptSub", { count: (state.prompts ?? []).length, sortHint }),
+      };
     case "mail": {
       const unreplied = (state.emails ?? []).filter(e => !e.replied).length;
-      return { ttl: "고객 문의", sub: `${unreplied}개 미답 · 답장 체크하면 자동 정리` };
+      return {
+        ttl: L("header.mailTitle"),
+        sub: L("header.mailSub", { unreplied, replyHint }),
+      };
     }
     case "retro":
-      return { ttl: "회고", sub: "날짜별 한 개 · 자동 저장" };
+      return { ttl: L("header.retroTitle"), sub: L("header.retroSub", { retroHint }) };
     default:
       return { ttl: "", sub: "" };
   }
 }
 
 function TabHeader({ active }) {
+  useI18n();
   const { state } = diary.useDiary();
   const { ttl, sub } = tabHeaderInfo(active, state);
   return (
@@ -581,6 +607,7 @@ function DockRevealEdge({ tweaks, setTweak, onReveal }) {
 
 // ---- 페이크 IDE 배경 ----
 function FakeIde({ dockSide, dockWidth }) {
+  useI18n();
   const ideStyle = {
     position: "absolute", top: 0, bottom: 24,
     [dockSide === "left" ? "left" : "right"]: dockWidth,
@@ -594,7 +621,7 @@ function FakeIde({ dockSide, dockWidth }) {
   return (
     <>
       <div className="fake-ide" style={ideStyle}>
-        <div style={{ color: "var(--ink-3)", marginBottom: 16, fontFamily: "var(--hand-2)", fontSize: 15 }}>✿ 이건 참고용 페이크 IDE — 다이어리가 실제로 어디 도킹되는지 보여주려고</div>
+        <div style={{ color: "var(--ink-3)", marginBottom: 16, fontFamily: "var(--hand-2)", fontSize: 15 }}>{L("fakeIde.caption")}</div>
         <div style={{ color: "var(--ink)" }}>todoary / src / components / Timer.tsx</div>
         <pre style={{ color: "var(--ink-2)", lineHeight: 1.65, marginTop: 14 }}>
 {`export function Timer({ minutes = 25 }) {
@@ -623,8 +650,10 @@ function FakeIde({ dockSide, dockWidth }) {
           padding: "1px 10px", borderRadius: 99,
           fontFamily: "var(--hand)", fontSize: 11,
           border: "1.1px solid var(--ink)",
-        }}>♡ 다이어리</span>
-        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-2)" }}>14:23 · 다음 스트레칭 23m</span>
+        }}>{L("fakeIde.taskbarApp")}</span>
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 10, color: "var(--ink-2)" }}>
+          {L("fakeIde.taskbarStatus", { clock: "14:23", stretch: L("timer.next"), remain: 23 })}
+        </span>
       </div>
     </>
   );
@@ -778,12 +807,6 @@ function SettingsView({ tweaks, setTweak }) {
           options={[["on", L("set.on")], ["off", L("set.off")]]} />
         <div className="sk-cap" style={{ marginTop: 6, fontSize: 11 }}>{L("set.tabsAutoHideHint")}</div>
       </SetSection>
-
-      {typeof window.RoomDevSandboxPanel === "function" && (
-        <SetSection label="작업방 개발 테스트 (이 PC만)">
-          <RoomDevSandboxPanel />
-        </SetSection>
-      )}
 
       <SetSection label={L("set.data")}>
         <button onClick={() => diary.actions.hardReset()} style={{
@@ -1009,7 +1032,7 @@ function StopRow({ stop, palette, onColor, onPos, onRemove, canRemove }) {
   return (
     <div style={{ marginBottom: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <button onClick={() => setOpen(o => !o)} title="색 선택" style={{
+        <button onClick={() => setOpen(o => !o)} title={L("deco.pickColor")} style={{
           all: "unset", cursor: "pointer", width: 24, height: 24, borderRadius: 6, flexShrink: 0,
           background: stop.c, border: "1.1px solid var(--ink)",
         }} />
@@ -1036,7 +1059,7 @@ function StopRow({ stop, palette, onColor, onPos, onRemove, canRemove }) {
 // 직접 색 선택 (네이티브 컬러 피커)
 function ColorPick({ value, onChange, round }) {
   return (
-    <label title="직접 색 선택" style={{
+    <label title={L("deco.pickColorCustom")} style={{
       position: "relative", cursor: "pointer",
       width: round ? 30 : 22, height: round ? 30 : 22,
       borderRadius: round ? "50%" : 5, overflow: "hidden",
@@ -1079,14 +1102,15 @@ function SetSeg({ value, onChange, options }) {
 // 키보드형 입력창 — 탭 맥락에 맞춰 빠르게 추가
 // ===========================================================
 function KeyboardInput({ active }) {
+  useI18n();
   const { state, actions } = diary.useDiary();
   const [v, setV] = useState("");
 
   const CFG = {
-    todo:  { ph: "할 일 추가…  (Enter 저장 · Shift+Enter 줄바꿈)",      add: (t) => actions.addTodo(t) },
-    memo:  { ph: "메모 추가…  (Enter 저장 · Shift+Enter 줄바꿈)",       add: (t) => actions.addMemo({ body: t }) },
-    mail:  { ph: "받은 메일 붙여넣고 Enter…  (Shift+Enter 줄바꿈)",     add: (t) => actions.addInquiry({ subject: t.split("\n")[0].slice(0, 60), body: t }) },
-    cal:   { ph: "이 날짜에 메모 추가…  (Enter 저장)",                  add: (t) => actions.appendNote(state.selectedDate || diary.today(), t) },
+    todo:  { ph: L("kbd.todoPh"),      add: (t) => actions.addTodo(t) },
+    memo:  { ph: L("kbd.memoPh"),       add: (t) => actions.addMemo({ body: t }) },
+    mail:  { ph: L("kbd.mailPh"),     add: (t) => actions.addInquiry({ subject: t.split("\n")[0].slice(0, 60), body: t }) },
+    cal:   { ph: L("kbd.calPh"),                  add: (t) => actions.appendNote(state.selectedDate || diary.today(), t) },
   };
   const cfg = CFG[active] || CFG.todo;
 
@@ -1116,7 +1140,7 @@ function KeyboardInput({ active }) {
           }}
         />
       </div>
-      <button onClick={submit} className="kbd-cap kbd-enter" title="추가 (Enter)" style={{
+      <button onClick={submit} className="kbd-cap kbd-enter" title={L("kbd.submit")} style={{
         width: 58, display: "grid", placeItems: "center",
         fontFamily: "var(--mono)", fontSize: 15, fontWeight: 700, color: "var(--ink)",
         cursor: "pointer",

@@ -31,7 +31,7 @@ function PromptView() {
       }}>
         <span className="sk-cap" style={{ fontSize: 14 }}>🔍</span>
         <input value={q} onChange={(e) => setQ(e.target.value)}
-          placeholder="제목으로 찾기…"
+          placeholder={L("prompt.searchPh")}
           style={{
             flex: 1, border: 0, outline: "none", background: "transparent",
             fontFamily: "var(--hand)", fontSize: 14, color: "var(--ink)",
@@ -46,21 +46,21 @@ function PromptView() {
           background: "var(--paper)", borderRadius: 10,
           border: "1.1px dashed var(--ink-2)",
           fontFamily: "var(--hand)", fontSize: 14, color: "var(--ink-2)",
-        }}>+ 새 프롬프트 저장</button>
+        }}>{L("prompt.addNew")}</button>
       ) : (
         <div className="sk-box" style={{ padding: 10, marginBottom: 12, background: "var(--paper-2)" }}>
           <textarea value={draft} onChange={(e) => setDraft(e.target.value)}
-            placeholder="자주 쓰는 프롬프트 본문…" rows={3}
+            placeholder={L("prompt.bodyPh")} rows={3}
             style={{
               width: "100%", border: 0, outline: "none", background: "transparent",
               fontFamily: "var(--hand-2)", fontSize: 15, color: "var(--ink)",
               resize: "vertical", minHeight: 48,
             }} />
           <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
-            <button onClick={() => { setDraft(""); setAdding(false); }} style={btn}>취소</button>
+            <button onClick={() => { setDraft(""); setAdding(false); }} style={btn}>{L("common.cancel")}</button>
             <button onClick={() => {
               if (draft.trim()) { actions.addPrompt(draft); setDraft(""); setAdding(false); }
-            }} style={{...btn, background: "var(--pink)"}}>저장</button>
+            }} style={{...btn, background: "var(--pink)"}}>{L("common.save")}</button>
           </div>
         </div>
       )}
@@ -68,7 +68,7 @@ function PromptView() {
       {/* 리스트 */}
       {filtered.length === 0 && (
         <div className="sk-cap" style={{ textAlign: "center", padding: 20 }}>
-          {q ? "검색 결과 없음" : "프롬프트가 없어요 — 위에서 추가해보세요"}
+          {q ? L("prompt.emptySearch") : L("prompt.empty")}
         </div>
       )}
       {filtered.map((p, i) => (
@@ -76,7 +76,7 @@ function PromptView() {
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
             <span className="sk-mono" style={{ color: "var(--ink-3)" }}>#{i+1}</span>
             <span className="sk-cap" style={{ marginLeft: "auto", fontSize: 13 }}>
-              {p.uses ?? 0}회 사용
+              {L("prompt.uses", { n: p.uses ?? 0 })}
             </span>
             <DelBtn onClick={() => {
               if (confirm(L("prompt.delConfirm"))) actions.removePrompt(p.id);
@@ -86,7 +86,7 @@ function PromptView() {
             <Editable
               value={p.text}
               onChange={(v) => actions.updatePrompt(p.id, v)}
-              placeholder="프롬프트 본문"
+              placeholder={L("prompt.bodyEditPh")}
               multiline
               style={{ fontFamily: "var(--hand-2)", fontSize: 16, color: "var(--ink)", lineHeight: 1.3 }}
             />
@@ -96,7 +96,7 @@ function PromptView() {
               ...btn,
               background: copiedId === p.id ? "var(--mint)" : "var(--pink)",
             }}>
-              {copiedId === p.id ? "✓ 복사함" : "📋 복사"}
+              {copiedId === p.id ? L("prompt.copied") : L("prompt.copy")}
             </button>
           </div>
         </div>

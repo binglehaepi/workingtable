@@ -1,4 +1,4 @@
-/* global React, diary, SplitPane, Editable, DelBtn */
+/* global React, diary, SplitPane, Editable, DelBtn, useI18n, L */
 // ===========================================================
 // 명령어 — 위: 주로 쓰는 명령어(사용 많은 순) / 아래: 등록한 명령어(전체)
 // 클릭 한 번에 복사. 프로젝트별 분리. 사용 횟수 자동 카운트.
@@ -6,6 +6,7 @@
 const { useState } = React;
 
 function CheatView() {
+  useI18n();
   const { state, actions } = diary.useDiary();
   const commands = diary.select.commandsForCurrent(state);
 
@@ -78,7 +79,7 @@ function CmdCard({ c, actions, copiedId, onCopy, compact, i = 0 }) {
         )}
       </span>
       <span className="sk-cap" style={{ fontSize: 11, flexShrink: 0 }}>{L("cheat.uses", { n: c.uses ?? 0 })}</span>
-      <button onClick={() => onCopy(c.id)} title="복사" style={{
+      <button onClick={() => onCopy(c.id)} title={L("common.copy")} style={{
         all: "unset", cursor: "pointer", fontSize: 13, flexShrink: 0,
         color: copiedId === c.id ? "var(--ink)" : "var(--ink-2)",
       }}>{copiedId === c.id ? "✓" : "📋"}</button>

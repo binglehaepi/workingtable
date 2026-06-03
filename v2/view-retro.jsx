@@ -1,9 +1,10 @@
-/* global React, diary, ViewHeader, Divider, Editable */
+/* global React, diary, useI18n, L */
 // ===========================================================
 // 회고 — 날짜별 1개 (오늘 회고 + 지난 회고 목록)
 // ===========================================================
 
 function RetroView() {
+  useI18n();
   const { state, actions } = diary.useDiary();
   const today = diary.today();
   const todayRetro = diary.select.retroForDate(state, today);
@@ -25,12 +26,12 @@ function RetroView() {
     <div>
       {/* 오늘 회고 */}
       <div className="sk-box" style={{ padding: 12, background: "var(--hi-soft)", marginBottom: 16 }}>
-        <div className="sk-label">오늘 · {diary.fmtKDate(today)}</div>
+        <div className="sk-label">{L("retro.todayLabel", { date: diary.fmtKDate(today) })}</div>
         <div style={{ marginTop: 6 }}>
           <Editable
             value={todayRetro?.text ?? ""}
             onChange={(v) => save({ text: v })}
-            placeholder="오늘 어땠나요? 한 줄도 충분해요."
+            placeholder={L("retro.textPh")}
             multiline
             style={{
               fontFamily: "var(--hand-2)", fontSize: 17, lineHeight: 1.35,
@@ -39,22 +40,22 @@ function RetroView() {
           />
         </div>
         <Divider />
-        <div className="sk-label" style={{ marginBottom: 6 }}>👍 잘된 것</div>
+        <div className="sk-label" style={{ marginBottom: 6 }}>{L("retro.goodLabel")}</div>
         <Editable
           value={todayRetro?.good ?? ""}
           onChange={(v) => save({ good: v })}
-          placeholder="잘된 일 (선택)"
+          placeholder={L("retro.goodPh")}
           multiline
           style={{
             fontFamily: "var(--hand)", fontSize: 14, color: "var(--ink-2)",
             lineHeight: 1.3, marginBottom: 10, minHeight: 20,
           }}
         />
-        <div className="sk-label" style={{ marginBottom: 6 }}>👎 막힌 것</div>
+        <div className="sk-label" style={{ marginBottom: 6 }}>{L("retro.badLabel")}</div>
         <Editable
           value={todayRetro?.bad ?? ""}
           onChange={(v) => save({ bad: v })}
-          placeholder="안 풀린 일 (선택)"
+          placeholder={L("retro.badPh")}
           multiline
           style={{
             fontFamily: "var(--hand)", fontSize: 14, color: "var(--ink-2)",
@@ -64,10 +65,10 @@ function RetroView() {
       </div>
 
       {/* 지난 회고 */}
-      <div className="sk-label" style={{ marginBottom: 8 }}>지난 회고 · {past.length}</div>
+      <div className="sk-label" style={{ marginBottom: 8 }}>{L("retro.pastTitle", { n: past.length })}</div>
       {past.length === 0 && (
         <div className="sk-cap" style={{ textAlign: "center", padding: 12 }}>
-          지난 회고가 없어요 — 매일 한 줄씩 쌓아봐요
+          {L("retro.pastEmpty")}
         </div>
       )}
       {past.map(r => (

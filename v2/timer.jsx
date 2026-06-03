@@ -16,16 +16,14 @@ const fmtMS = (ms) => {
   return `${String(m).padStart(2,"0")}:${String(r).padStart(2,"0")}`;
 };
 
-const STRETCH_TIPS = [
-  "어깨 한 번 돌리고 와요",
-  "목을 천천히 좌우로",
-  "허리 펴고 깊게 숨 한 번",
-  "손목 한 바퀴 돌리기",
-  "눈 깜빡깜빡, 멀리 한 번 보기",
-  "잠깐 일어서서 기지개",
-  "물 한 모금 어떠세요?",
+const STRETCH_TIP_KEYS = [
+  "stretch.tip0", "stretch.tip1", "stretch.tip2", "stretch.tip3",
+  "stretch.tip4", "stretch.tip5", "stretch.tip6",
 ];
-function randTip() { return STRETCH_TIPS[Math.floor(Math.random() * STRETCH_TIPS.length)]; }
+function randTip() {
+  const k = STRETCH_TIP_KEYS[Math.floor(Math.random() * STRETCH_TIP_KEYS.length)];
+  return L(k);
+}
 
 function Timer() {
   return (
@@ -173,6 +171,7 @@ function extractYouTubeId(url) {
 }
 
 function PlaylistBar() {
+  useI18n();
   const { state, actions } = diary.useDiary();
   const tracks = state.playlist ?? [];
   const music = useMusic();
@@ -246,11 +245,11 @@ function PlaylistBar() {
   return (
     <div style={{ position: "relative" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <button onClick={() => runMusic(() => music.prev())} title="이전" style={pbBtn}>⏮</button>
-        <button onClick={() => runMusic(() => music.toggle())} title={ms.playing ? "일시정지" : "재생"} style={pbBtn}>
+        <button onClick={() => runMusic(() => music.prev())} title={L("music.prev")} style={pbBtn}>⏮</button>
+        <button onClick={() => runMusic(() => music.toggle())} title={ms.playing ? L("music.pause") : L("music.play")} style={pbBtn}>
           {ms.playing ? "⏸" : "▶"}
         </button>
-        <button onClick={() => runMusic(() => music.next())} title="다음" style={pbBtn}>⏭</button>
+        <button onClick={() => runMusic(() => music.next())} title={L("music.next")} style={pbBtn}>⏭</button>
         <div className="marquee" style={{
           flex: 1, height: 20, lineHeight: "20px",
           borderRadius: 6, padding: "0 4px",
@@ -259,7 +258,7 @@ function PlaylistBar() {
         }}>
           <span className="marquee-inner">{label}　♫　{label}</span>
         </div>
-        <button onClick={() => setOpen(o => !o)} title="플레이리스트" style={pbBtn}>{open ? "▾" : "+"}</button>
+        <button onClick={() => setOpen(o => !o)} title={L("music.playlist")} style={pbBtn}>{open ? "▾" : "+"}</button>
       </div>
       {/* 펼침: 곡 추가 + 목록 (위로 팝오버) */}
       {open && (
@@ -331,7 +330,7 @@ function PlaylistBar() {
                     padding: "3px 5px", borderRadius: 6,
                     background: isCur ? "var(--hi-soft)" : "transparent",
                   }}>
-                    <button onClick={() => runMusic(() => music.play(t.videoId))} title="재생" style={{
+                    <button onClick={() => runMusic(() => music.play(t.videoId))} title={L("music.play")} style={{
                       all: "unset", cursor: "pointer", width: 16, textAlign: "center",
                       color: "var(--ink)", fontSize: 12,
                     }}>{isCur && ms.playing ? "♪" : "▶"}</button>
@@ -364,6 +363,7 @@ const pbBtn = {
 
 // ---- 도넛 ----
 function TimerDonut({ remaining, progress, paused, enabled, running, onClick }) {
+  useI18n();
   const size = 34;
   const r = (size - 4) / 2;
   const c = 2 * Math.PI * r;
@@ -373,7 +373,7 @@ function TimerDonut({ remaining, progress, paused, enabled, running, onClick }) 
               : "var(--hi)";
 
   return (
-    <button onClick={onClick} title={running ? "클릭: 일시정지" : "클릭: 시작/재개"} style={{
+    <button onClick={onClick} title={running ? L("timer.clickPause") : L("timer.clickResume")} style={{
       all: "unset", cursor: "pointer",
       position: "relative", width: size, height: size,
       flexShrink: 0,

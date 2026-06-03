@@ -1,4 +1,4 @@
-/* global React, diary, L */
+/* global React, diary, L, useI18n */
 // ===========================================================
 // 주간탭 — 주간 조망(7칸 격자) ↔ 하루 상세 슬라이드 전환
 //   같은 창 안에서 가로 슬라이드. 모달/별창 없음.
@@ -89,18 +89,19 @@ const SPRITE_URL = "asset/Sprite-0002.png";
 const SPRITE_COLS = 6;
 const SPRITE_ROWS = 4;
 const TILE = 16;
-const MOODS = [
-  { id: "great",  label: "반짝", col: 1, row: 0 }, // sparkle
-  { id: "happy",  label: "좋아", col: 0, row: 1 }, // sun
-  { id: "love",   label: "두근", col: 0, row: 0 }, // heart
-  { id: "calm",   label: "잔잔", col: 5, row: 1 }, // sprout
-  { id: "soso",   label: "그저", col: 1, row: 1 }, // cloud
-  { id: "tired",  label: "지침", col: 4, row: 1 }, // moon
-  { id: "sad",    label: "울적", col: 2, row: 1 }, // rain cloud
-  { id: "stress", label: "꽉참", col: 2, row: 0 }, // exclamation
+const MOOD_TILES = [
+  { id: "great",  col: 1, row: 0 },
+  { id: "happy",  col: 0, row: 1 },
+  { id: "love",   col: 0, row: 0 },
+  { id: "calm",   col: 5, row: 1 },
+  { id: "soso",   col: 1, row: 1 },
+  { id: "tired",  col: 4, row: 1 },
+  { id: "sad",    col: 2, row: 1 },
+  { id: "stress", col: 2, row: 0 },
 ];
+function moodLabel(id) { return L("mood." + id); }
 function MoodIcon({ mood, size = 28 }) {
-  const m = MOODS.find(x => x.id === mood);
+  const m = MOOD_TILES.find(x => x.id === mood);
   if (!m) return null;
   const scale = size / TILE;
   return (
@@ -119,6 +120,7 @@ function MoodIcon({ mood, size = 28 }) {
 // 메인 — 슬라이드 컨테이너
 // ===========================================================
 function CalendarView() {
+  useI18n();
   // null 이면 주간 뷰, 문자열(YYYY-MM-DD)이면 하루 뷰
   const [openDate, setOpenDate] = useState(null);
   // 슬라이드 트랙용 — 닫혀도 잠시 하루 뷰가 살아있어야 슬라이드 애니가 보임
@@ -296,7 +298,7 @@ function DayCell({ date, labelKey, due, doneFloat, workMin, hasRetro, mood,
   const dayName = L(labelKey);
 
   return (
-    <div onClick={onClick} title={`${date.getMonth()+1}/${date.getDate()} 자세히`} style={{
+    <div onClick={onClick} title={L("planner.dayDetail", { month: date.getMonth() + 1, day: date.getDate() })} style={{
       cursor: "pointer",
       borderRight: colIdx === 0 ? "1px solid var(--ink-soft)" : "none",
       borderBottom: rowIdx < 3 ? "1px solid var(--ink-soft)" : "none",
@@ -405,7 +407,7 @@ function TodoMiniLine({ t, onToggle }) {
       lineHeight: 1.3,
       color: t.done ? "var(--ink-3)" : "var(--ink)",
     }}>
-      <button onClick={(e) => { e.stopPropagation(); onToggle(); }} title={t.done ? "되돌리기" : "끝냄으로"} style={{
+      <button onClick={(e) => { e.stopPropagation(); onToggle(); }} title={t.done ? L("todo.undoDone") : L("todo.markDone")} style={{
         all: "unset", cursor: "pointer", flexShrink: 0,
         width: 11, height: 11, marginTop: 2,
         border: "1px solid var(--ink)", borderRadius: 2,
@@ -841,15 +843,17 @@ function WorkDayBar({ totalSec, topSong, endClock, date }) {
 
 // 기분 — 메모 QuickBlockBtn 스타일
 function MoodRow({ value, onChange }) {
+  useI18n();
   return (
     <div style={{
       flex: 1, minWidth: 0,
       display: "flex", gap: 4, justifyContent: "flex-end", flexWrap: "wrap",
     }}>
-      {MOODS.map(m => {
+      {MOOD_TILES.map(m => {
         const active = value === m.id;
+        const label = moodLabel(m.id);
         return (
-          <button key={m.id} onClick={() => onChange(active ? null : m.id)} title={m.label} style={{
+          <button key={m.id} onClick={() => onChange(active ? null : m.id)} title={label} style={{
             all: "unset", cursor: "pointer", flexShrink: 0,
             display: "inline-flex", alignItems: "center", gap: 4,
             padding: "2px 7px", borderRadius: 6,
@@ -865,7 +869,7 @@ function MoodRow({ value, onChange }) {
             <span style={{
               fontFamily: "var(--hand)", fontSize: 10.5, color: "var(--ink)",
               display: active ? "inline" : "none",
-            }}>{m.label}</span>
+            }}>{label}</span>
           </button>
         );
       })}
@@ -882,7 +886,7 @@ function TodoLine({ t, onToggle }) {
       background: t.done ? "#f7f9fc" : "#ffffff",
       border: "1px solid #e4e8ee", borderRadius: 6,
     }}>
-      <button onClick={onToggle} title={t.done ? "되돌리기" : "끝냄으로"} style={{
+      <button onClick={onToggle} title={t.done ? L("todo.undoDone") : L("todo.markDone")} style={{
         all: "unset", cursor: "pointer", flexShrink: 0,
         width: 16, height: 16, borderRadius: 4,
         border: "1.1px solid var(--ink)",

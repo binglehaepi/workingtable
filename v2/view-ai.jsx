@@ -1,4 +1,4 @@
-/* global React, diary, ViewHeader, Editable, DelBtn */
+/* global React, diary, ViewHeader, Editable, DelBtn, useI18n, L */
 // ===========================================================
 // AI 세션 북마크 — 추가 / 굿|별로 토글 / 메모 / 삭제
 // 날짜별 그룹핑
@@ -6,6 +6,7 @@
 const { useState } = React;
 
 function AIView() {
+  useI18n();
   const { state, actions } = diary.useDiary();
   const bookmarks = diary.select.bookmarksForCurrent(state);
   const [adding, setAdding] = useState(false);
@@ -30,8 +31,8 @@ function AIView() {
   return (
     <div>
       <ViewHeader
-        ttl="AI 세션 북마크"
-        sub={`이 프로젝트 · ${bookmarks.length}개 · 굿/별로 + 한 줄 메모`}
+        ttl={L("ai.title")}
+        sub={L("ai.sub", { n: bookmarks.length })}
       />
 
       {!adding ? (
@@ -41,42 +42,42 @@ function AIView() {
           background: "var(--paper)", borderRadius: 10,
           border: "1.1px dashed var(--ink-2)",
           fontFamily: "var(--hand)", fontSize: 14, color: "var(--ink-2)",
-        }}>+ 새 북마크 추가</button>
+        }}>{L("ai.addNew")}</button>
       ) : (
         <div className="sk-box" style={{ padding: 10, marginBottom: 12, background: "var(--paper-2)" }}>
           <input value={title} onChange={(e) => setTitle(e.target.value)}
-            placeholder="세션 한 줄 요약 (예: Auth 흐름 설계)"
+            placeholder={L("ai.titlePh")}
             style={inputStyle} />
           <hr className="sk-hr" />
           <textarea value={note} onChange={(e) => setNote(e.target.value)}
-            placeholder="기억할 메모 (선택)" rows={2}
+            placeholder={L("ai.notePh")} rows={2}
             style={{...inputStyle, resize: "vertical", minHeight: 30}} />
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8 }}>
             <button onClick={() => setOk(true)} style={{
               ...btn,
               background: ok ? "var(--ok)" : "var(--paper)",
-            }}>● 굿</button>
+            }}>{L("ai.goodBtn")}</button>
             <button onClick={() => setOk(false)} style={{
               ...btn,
               background: !ok ? "var(--bad)" : "var(--paper)",
-            }}>○ 별로</button>
+            }}>{L("ai.badBtn")}</button>
             <span style={{ flex: 1 }} />
-            <button onClick={() => { reset(); setAdding(false); }} style={btn}>취소</button>
-            <button onClick={submit} style={{...btn, background: "var(--pink)"}}>저장</button>
+            <button onClick={() => { reset(); setAdding(false); }} style={btn}>{L("common.cancel")}</button>
+            <button onClick={submit} style={{...btn, background: "var(--pink)"}}>{L("common.save")}</button>
           </div>
         </div>
       )}
 
       {dates.length === 0 && (
         <div className="sk-cap" style={{ textAlign: "center", padding: 20 }}>
-          이 프로젝트의 AI 세션 기록이 없어요
+          {L("ai.empty")}
         </div>
       )}
 
       {dates.map(d => (
         <div key={d} style={{ marginBottom: 14 }}>
           <div className="sk-label" style={{ marginBottom: 6 }}>
-            {d === diary.today() ? "오늘 · " : ""}{diary.fmtKDateShort(d)}
+            {d === diary.today() ? L("ai.todayPrefix") : ""}{diary.fmtKDateShort(d)}
           </div>
           {grouped[d].map(b => (
             <div key={b.id} className="sk-box" style={{ padding: 8, marginBottom: 6, background: "white" }}>
@@ -84,7 +85,7 @@ function AIView() {
                 <button onClick={() => actions.updateBookmark(b.id, { ok: !b.ok })}
                   className={"sk-dot " + (b.ok ? "ok" : "bad")}
                   style={{ cursor: "pointer", border: 0, padding: 0, marginRight: 2 }}
-                  title="굿/별로 토글"
+                  title={L("ai.toggle")}
                 />
                 <div style={{ flex: 1 }}>
                   <Editable
@@ -93,13 +94,13 @@ function AIView() {
                     style={{ fontFamily: "var(--hand)", fontSize: 15 }}
                   />
                 </div>
-                <span className="sk-cap" style={{ fontSize: 13 }}>{b.ok ? "굿" : "별로"}</span>
+                <span className="sk-cap" style={{ fontSize: 13 }}>{b.ok ? L("ai.goodShort") : L("ai.badShort")}</span>
                 <DelBtn onClick={() => actions.removeBookmark(b.id)} />
               </div>
               <Editable
                 value={b.note}
                 onChange={(v) => actions.updateBookmark(b.id, { note: v })}
-                placeholder="메모 추가…"
+                placeholder={L("ai.noteAddPh")}
                 multiline
                 style={{
                   fontFamily: "var(--hand-2)", fontSize: 14, color: "var(--ink-2)",

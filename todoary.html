@@ -119,6 +119,8 @@
       "appPosX": -1,
       "appPosY": -1,
       "appPosPhysical": true,
+      "dockMiniPosX": -1,
+      "dockMiniPosY": -1,
       "showFakeIde": true,
       "desktopMode": false,
       "alwaysOnTop": false,
@@ -145,6 +147,19 @@
 
     function todoaryPosToTweak(pos) {
       return { appPosX: pos.x, appPosY: pos.y, appPosPhysical: true };
+    }
+
+    function todoaryPosToMiniTweak(pos) {
+      return { dockMiniPosX: pos.x, dockMiniPosY: pos.y };
+    }
+
+    function todoaryGetSavedMiniPos(t) {
+      const mem = window.__TODOARY_SAVED_MINI_POS__;
+      if (mem && Number.isFinite(mem.x) && Number.isFinite(mem.y)) return mem;
+      if (t && t.dockMiniPosX >= 0 && t.dockMiniPosY >= 0) {
+        return { x: t.dockMiniPosX, y: t.dockMiniPosY };
+      }
+      return null;
     }
 
     async function todoaryClampPhysicalPos(win, x, y, logicalW, logicalH) {
@@ -217,6 +232,8 @@
       React.useEffect(() => {
         const saved = todoaryGetSavedNormalPos(t);
         if (saved) window.__TODOARY_SAVED_NORMAL_POS__ = saved;
+        const miniSaved = todoaryGetSavedMiniPos(t);
+        if (miniSaved) window.__TODOARY_SAVED_MINI_POS__ = miniSaved;
       }, []);
       React.useEffect(() => {
         document.documentElement.setAttribute("data-desktop-mode", String(t.desktopMode));
@@ -257,24 +274,30 @@
         })();
       }, [t.appSize]);
 
-      // 일반 모드에서 창을 옮기면 마지막 위치를 계속 기억 (미니 복귀용)
+      // 창 이동 시 모드별 마지막 위치 기억 (일반 → 복귀용, 미니 → 재미니화용)
       React.useEffect(() => {
         const T = window.__TAURI__;
         if (!T || !T.window || !T.window.getCurrentWindow) return;
         const win = T.window.getCurrentWindow();
+        const isMini = t.dockHidden;
         let unlisten;
         let moveTimer;
         (async () => {
           try {
             if (!win.onMoved) return;
             unlisten = await win.onMoved(({ payload }) => {
-              if (t.dockHidden || dockTransitionRef.current) return;
+              if (dockTransitionRef.current) return;
               clearTimeout(moveTimer);
               moveTimer = setTimeout(() => {
                 try {
                   const pos = { x: Math.round(payload.x), y: Math.round(payload.y) };
-                  window.__TODOARY_SAVED_NORMAL_POS__ = pos;
-                  setTweak(todoaryPosToTweak(pos));
+                  if (isMini) {
+                    window.__TODOARY_SAVED_MINI_POS__ = pos;
+                    setTweak(todoaryPosToMiniTweak(pos));
+                  } else {
+                    window.__TODOARY_SAVED_NORMAL_POS__ = pos;
+                    setTweak(todoaryPosToTweak(pos));
+                  }
                 } catch (_) {}
               }, 250);
             });
@@ -314,7 +337,16 @@
               await win.setMinSize(new LS(Math.max(120, mini.w - 24), Math.max(56, mini.h - 16)));
               await win.setSize(new LS(mini.w, mini.h));
               if (win.setResizable) { try { await win.setResizable(false); } catch (_) {} }
+              const miniPos = todoaryGetSavedMiniPos(t);
+              if (miniPos) await todoaryApplyWindowPos(win, miniPos, mini.w, mini.h);
             } else {
+              if (exitingMini) {
+                try {
+                  const curMini = await todoaryReadWindowPos(win);
+                  window.__TODOARY_SAVED_MINI_POS__ = curMini;
+                  setTweak(todoaryPosToMiniTweak(curMini));
+                } catch (_) {}
+              }
               if (win.setResizable) { try { await win.setResizable(true); } catch (_) {} }
               await win.setMinSize(new LS(380, 360));
               const avail = window.screen.availHeight || 900;
